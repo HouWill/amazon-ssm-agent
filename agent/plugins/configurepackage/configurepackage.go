@@ -24,10 +24,10 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/log"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/birdwatcher"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/installer"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/localpackages"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/packageservice"
@@ -46,7 +46,7 @@ const (
 // Plugin is the type for the configurepackage plugin.
 type Plugin struct {
 	pluginutil.DefaultPlugin
-	packageServiceSelector func(serviceEndpoint string) packageservice.PackageService
+	packageServiceSelector func(log log.T, serviceEndpoint string, localrepo localpackages.Repository) packageservice.PackageService
 	localRepository        localpackages.Repository
 }
 
@@ -80,7 +80,6 @@ func NewPlugin(pluginConfig pluginutil.PluginConfig) (*Plugin, error) {
 func prepareConfigurePackage(
 	context context.T,
 	config contracts.Configuration,
-	runner runpluginutil.PluginRunner,
 	repository localpackages.Repository,
 	packageService packageservice.PackageService,
 	input *ConfigurePackagePluginInput,
@@ -100,7 +99,7 @@ func prepareConfigurePackage(
 		}
 
 		// ensure manifest file and package
-		inst, err = ensurePackage(context, repository, packageService, input.Name, version, config, runner)
+		inst, err = ensurePackage(context, repository, packageService, input.Name, version, config)
 		if err != nil {
 			output.MarkAsFailed(log, fmt.Errorf("unable to obtain package: %v", err))
 			return
@@ -108,7 +107,7 @@ func prepareConfigurePackage(
 
 		// if different version is installed, uninstall
 		if installedVersion != "" && installedVersion != version {
-			uninst, err = ensurePackage(context, repository, packageService, input.Name, installedVersion, config, runner)
+			uninst, err = ensurePackage(context, repository, packageService, input.Name, installedVersion, config)
 			if err != nil {
 				output.AppendErrorf(log, "unable to obtain package: %v", err)
 			}
@@ -126,7 +125,7 @@ func prepareConfigurePackage(
 		}
 
 		// ensure manifest file and package
-		uninst, err = ensurePackage(context, repository, packageService, input.Name, version, config, runner)
+		uninst, err = ensurePackage(context, repository, packageService, input.Name, version, config)
 		if err != nil {
 			output.MarkAsFailed(log, fmt.Errorf("unable to obtain package: %v", err))
 			return
@@ -146,14 +145,13 @@ func ensurePackage(context context.T,
 	packageService packageservice.PackageService,
 	packageName string,
 	version string,
-	config contracts.Configuration,
-	runner runpluginutil.PluginRunner) (installer.Installer, error) {
+	config contracts.Configuration) (installer.Installer, error) {
 
 	currentState, currentVersion := repository.GetInstallState(context, packageName)
 	if err := repository.ValidatePackage(context, packageName, version); err != nil || (currentVersion == version && currentState == localpackages.Failed) {
 		context.Log().Debugf("Current %v Target %v State %v", currentVersion, version, currentState)
 		context.Log().Debugf("Refreshing package content for %v %v %v", packageName, version, err)
-		if err = repository.RefreshPackage(context, packageName, version, buildDownloadDelegate(context, packageService, packageName, version)); err != nil {
+		if err = repository.RefreshPackage(context, packageName, version, packageService.PackageServiceName(), buildDownloadDelegate(context, packageService, packageName, version)); err != nil {
 			return nil, err
 		}
 		if err = repository.ValidatePackage(context, packageName, version); err != nil {
@@ -161,7 +159,7 @@ func ensurePackage(context context.T,
 			return nil, err
 		}
 	}
-	return repository.GetInstaller(context, config, runner, packageName, version), nil
+	return repository.GetInstaller(context, config, packageName, version), nil
 }
 
 // buildDownloadDelegate constructs the delegate used by the repository to download a package from the service
@@ -323,112 +321,122 @@ func checkAlreadyInstalled(context context.T,
 }
 
 // selectService chooses the implementation of PackageService to use for a given execution of the plugin
-func selectService(serviceEndpoint string) packageservice.PackageService {
+func selectService(log log.T, serviceEndpoint string, localrepo localpackages.Repository) packageservice.PackageService {
 	region, _ := platform.Region()
-	packageService := ssms3.New(serviceEndpoint, region)
-	//packageService = birdwatcher.New(log)
+	appCfg, err := appconfig.Config(false)
 
-	return packageService
+	if (err == nil && appCfg.Birdwatcher.ForceEnable) || !ssms3.UseSSMS3Service(log, serviceEndpoint, region) {
+		log.Debugf("S3 repository is not marked active in %v %v", region, serviceEndpoint)
+		return birdwatcher.New(serviceEndpoint, localrepo)
+	}
+	return ssms3.New(serviceEndpoint, region)
 }
 
 // Execute runs the plugin operation and returns output
 // res.Output will contain a slice of RunCommandPluginOutput
-func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag, subDocumentRunner runpluginutil.PluginRunner) (res contracts.PluginResult) {
-	return p.execute(context, config, cancelFlag, subDocumentRunner, pluginutil.PersistPluginInformationToCurrent)
+func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag) (res contracts.PluginResult) {
+	return p.execute(context, config, cancelFlag, pluginutil.PersistPluginInformationToCurrent)
 }
 
-func (p *Plugin) execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag, subDocumentRunner runpluginutil.PluginRunner, persistPluginInfo func(log log.T, pluginID string, config contracts.Configuration, res contracts.PluginResult)) (res contracts.PluginResult) {
+func (p *Plugin) execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag, persistPluginInfo func(log log.T, pluginID string, config contracts.Configuration, res contracts.PluginResult)) (res contracts.PluginResult) {
 	log := context.Log()
 	log.Info("RunCommand started with configuration ", config)
 
 	res.StartDateTime = time.Now()
-	defer func() { res.EndDateTime = time.Now() }()
+	defer func() {
+		res.EndDateTime = time.Now()
+	}()
 
+	out := contracts.PluginOutput{}
 	if cancelFlag.ShutDown() {
-		res.Code = 1
-		res.Status = contracts.ResultStatusFailed
+		out.MarkAsShutdown()
 	} else if cancelFlag.Canceled() {
-		res.Code = 1
-		res.Status = contracts.ResultStatusCancelled
-	}
-
-	output := contracts.PluginOutput{}
-	input, err := parseAndValidateInput(config.Properties)
-	if err != nil {
-		output.MarkAsFailed(log, err)
-	} else {
+		out.MarkAsCancelled()
+	} else if input, err := parseAndValidateInput(config.Properties); err != nil {
+		out.MarkAsFailed(log, err)
+	} else if err := lockPackage(input.Name, input.Action); err != nil {
 		// do not allow multiple actions to be performed at the same time for the same package
 		// this is possible with multiple concurrent runcommand documents
-		if err := lockPackage(input.Name, input.Action); err != nil {
-			output.MarkAsFailed(log, err)
-			return
-		}
+		out.MarkAsFailed(log, err)
+	} else {
 		defer unlockPackage(input.Name)
 
-		packageService := p.packageServiceSelector(input.Repository)
+		packageService := p.packageServiceSelector(log, input.Repository, p.localRepository)
 
 		log.Debugf("Prepare for %v %v %v", input.Action, input.Name, input.Version)
 		inst, uninst, installState, installedVersion := prepareConfigurePackage(
 			context,
 			config,
-			subDocumentRunner,
 			p.localRepository,
 			packageService,
 			input,
-			&output)
+			&out)
 		log.Debugf("HasInst %v, HasUninst %v, InstallState %v, InstalledVersion %v", inst != nil, uninst != nil, installState, installedVersion)
 		// if already failed or already installed and valid, do not execute install
-		if output.Status != contracts.ResultStatusFailed && !checkAlreadyInstalled(context, p.localRepository, installedVersion, installState, inst, uninst, &output) {
-			log.Debugf("Calling execute, current status %v", output.Status)
-			result := executeConfigurePackage(context,
+		if out.Status != contracts.ResultStatusFailed && !checkAlreadyInstalled(context, p.localRepository, installedVersion, installState, inst, uninst, &out) {
+			log.Debugf("Calling execute, current status %v", out.Status)
+			executeConfigurePackage(context,
 				p.localRepository,
 				inst,
 				uninst,
 				installState,
-				&output)
-			if !output.Status.IsReboot() {
-				packageService.ReportResult(context.Log(), result)
+				&out)
+			if !out.Status.IsReboot() {
+				version := input.Version
+				if input.Action == InstallAction {
+					version = inst.Version()
+				}
+				err := packageService.ReportResult(context.Log(), packageservice.PackageResult{
+					Exitcode:               int64(out.ExitCode),
+					Operation:              input.Action,
+					PackageName:            input.Name,
+					PreviousPackageVersion: installedVersion,
+					Timing:                 1,
+					Version:                version,
+				})
+				if err != nil {
+					out.AppendErrorf(log, "Error reporting results: %v", err.Error())
+				}
 			}
 		}
-	}
 
-	if config.OrchestrationDirectory != "" {
-		useTemp := false
-		outFile := filepath.Join(config.OrchestrationDirectory, p.StdoutFileName)
-		// create orchestration dir if needed
-		if err := filesysdep.MakeDirExecute(config.OrchestrationDirectory); err != nil {
-			output.AppendError(log, "Failed to create orchestrationDir directory for log files")
-		} else {
-			if err := filesysdep.WriteFile(outFile, output.Stdout); err != nil {
-				log.Debugf("Error writing to %v", outFile)
-				output.AppendErrorf(log, "Error saving stdout: %v", err.Error())
+		if config.OrchestrationDirectory != "" {
+			useTemp := false
+			outFile := filepath.Join(config.OrchestrationDirectory, p.StdoutFileName)
+			// create orchestration dir if needed
+			if err := filesysdep.MakeDirExecute(config.OrchestrationDirectory); err != nil {
+				out.AppendError(log, "Failed to create orchestrationDir directory for log files")
+			} else {
+				if err := filesysdep.WriteFile(outFile, out.Stdout); err != nil {
+					log.Debugf("Error writing to %v", outFile)
+					out.AppendErrorf(log, "Error saving stdout: %v", err.Error())
+				}
+				errFile := filepath.Join(config.OrchestrationDirectory, p.StderrFileName)
+				if err := filesysdep.WriteFile(errFile, out.Stderr); err != nil {
+					log.Debugf("Error writing to %v", errFile)
+					out.AppendErrorf(log, "Error saving stderr: %v", err.Error())
+				}
 			}
-			errFile := filepath.Join(config.OrchestrationDirectory, p.StderrFileName)
-			if err := filesysdep.WriteFile(errFile, output.Stderr); err != nil {
-				log.Debugf("Error writing to %v", errFile)
-				output.AppendErrorf(log, "Error saving stderr: %v", err.Error())
+			uploadErrs := p.ExecuteUploadOutputToS3Bucket(log,
+				config.PluginID,
+				config.OrchestrationDirectory,
+				config.OutputS3BucketName,
+				config.OutputS3KeyPrefix,
+				useTemp,
+				config.OrchestrationDirectory,
+				out.Stdout,
+				out.Stderr)
+			for _, uploadErr := range uploadErrs {
+				out.AppendError(log, uploadErr)
 			}
-		}
-		uploadErrs := p.ExecuteUploadOutputToS3Bucket(log,
-			config.PluginID,
-			config.OrchestrationDirectory,
-			config.OutputS3BucketName,
-			config.OutputS3KeyPrefix,
-			useTemp,
-			config.OrchestrationDirectory,
-			output.Stdout,
-			output.Stderr)
-		for _, uploadErr := range uploadErrs {
-			output.AppendError(log, uploadErr)
 		}
 	}
+	res.Code = out.ExitCode
+	res.Status = out.Status
+	res.Output = out.String()
+	res.StandardOutput = pluginutil.StringPrefix(out.Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
+	res.StandardError = pluginutil.StringPrefix(out.Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
 	persistPluginInfo(log, config.PluginID, config, res)
-
-	res.Code = output.ExitCode
-	res.Status = output.Status
-	res.Output = output.String()
-	res.StandardOutput = pluginutil.StringPrefix(output.Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
-	res.StandardError = pluginutil.StringPrefix(output.Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
 
 	return res
 }

@@ -52,6 +52,7 @@ func (rs ResultStatus) IsReboot() bool {
 // MergeResultStatus takes two ResultStatuses (presumably from sub-tasks) and decides what the overall task status should be
 func MergeResultStatus(current ResultStatus, new ResultStatus) (merged ResultStatus) {
 	orderedResultStatus := [...]ResultStatus{
+		ResultStatusSkipped,
 		ResultStatusSuccess,
 		ResultStatusSuccessAndReboot,
 		ResultStatusPassedAndReboot,
@@ -60,7 +61,6 @@ func MergeResultStatus(current ResultStatus, new ResultStatus) (merged ResultSta
 		ResultStatusFailed,
 		ResultStatusCancelled,
 		ResultStatusTimedOut,
-		ResultStatusSkipped,
 	}
 	if current == "" {
 		return new
@@ -214,4 +214,15 @@ type PluginRuntimeStatus struct {
 type AgentConfiguration struct {
 	AgentInfo  AgentInfo
 	InstanceID string
+}
+
+type DocumentResult struct {
+	DocumentName    string
+	DocumentVersion string
+	MessageID       string
+	AssociationID   string
+	PluginResults   map[string]*PluginResult
+	Status          ResultStatus
+	LastPlugin      string
+	NPlugins        int
 }

@@ -26,7 +26,6 @@ import (
 
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/model"
 	"github.com/stretchr/testify/assert"
@@ -42,7 +41,7 @@ var contextMock context.T = context.NewMockDefault()
 
 func TestGetInstaller(t *testing.T) {
 	repo := NewRepository()
-	inst := repo.GetInstaller(contextMock, contracts.Configuration{}, runpluginutil.PluginRunner{}, testPackage, "1.0.0")
+	inst := repo.GetInstaller(contextMock, contracts.Configuration{}, testPackage, "1.0.0")
 	assert.NotNil(t, inst)
 }
 
@@ -188,6 +187,41 @@ func TestValidatePackage(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestValidatePackage_Manifest(t *testing.T) {
+	version := "0.0.1"
+	// Setup mock with expectations
+	mockFileSys := MockedFileSys{}
+	mockFileSys.On("Exists", path.Join(testRepoRoot, testPackage, version, "SsmTest.json")).Return(false).Once()
+	mockFileSys.On("Exists", path.Join(testRepoRoot, testPackage, version, "manifest.json")).Return(true).Once()
+	mockFileSys.On("ReadFile", path.Join(testRepoRoot, testPackage, version, "manifest.json")).Return(loadFile(t, path.Join(testRepoRoot, testPackage, version, "SsmTest.json")), nil).Once()
+	mockFileSys.On("GetFileNames", path.Join(testRepoRoot, testPackage, version)).Return([]string{"SsmTest.json", "install.json"}, nil)
+
+	// Instantiate repository with mock
+	repo := localRepository{filesysdep: &mockFileSys, repoRoot: testRepoRoot}
+
+	// Call and validate mock expectations and return value
+	err := repo.ValidatePackage(contextMock, testPackage, version)
+	mockFileSys.AssertExpectations(t)
+	assert.Nil(t, err)
+}
+
+func TestValidatePackage_NoManifest(t *testing.T) {
+	version := "0.0.1"
+	// Setup mock with expectations
+	mockFileSys := MockedFileSys{}
+	mockFileSys.On("Exists", path.Join(testRepoRoot, testPackage, version, "SsmTest.json")).Return(false).Once()
+	mockFileSys.On("Exists", path.Join(testRepoRoot, testPackage, version, "manifest.json")).Return(false).Once()
+	mockFileSys.On("GetFileNames", path.Join(testRepoRoot, testPackage, version)).Return([]string{"install.json", "uninstall.json"}, nil)
+
+	// Instantiate repository with mock
+	repo := localRepository{filesysdep: &mockFileSys, repoRoot: testRepoRoot}
+
+	// Call and validate mock expectations and return value
+	err := repo.ValidatePackage(contextMock, testPackage, version)
+	mockFileSys.AssertExpectations(t)
+	assert.Nil(t, err)
+}
+
 func TestValidatePackageNoContent(t *testing.T) {
 	version := "0.0.1"
 	// Setup mock with expectations
@@ -241,7 +275,7 @@ func TestAddPackage(t *testing.T) {
 	repo := localRepository{filesysdep: &mockFileSys, repoRoot: testRepoRoot}
 
 	// Call and validate mock expectations and return value
-	err := repo.AddPackage(contextMock, testPackage, version, mockDownload.Download)
+	err := repo.AddPackage(contextMock, testPackage, version, "mock-package-service", mockDownload.Download)
 	mockFileSys.AssertExpectations(t)
 	mockDownload.AssertExpectations(t)
 	assert.Nil(t, err)
@@ -263,7 +297,7 @@ func TestAddNewPackage(t *testing.T) {
 	repo := localRepository{filesysdep: &mockFileSys, repoRoot: testRepoRoot}
 
 	// Call and validate mock expectations and return value
-	err := repo.AddPackage(contextMock, testPackage, version, mockDownload.Download)
+	err := repo.AddPackage(contextMock, testPackage, version, "mock-package-service", mockDownload.Download)
 	mockFileSys.AssertExpectations(t)
 	mockDownload.AssertExpectations(t)
 	assert.Nil(t, err)
@@ -284,7 +318,7 @@ func TestRefreshPackage(t *testing.T) {
 	repo := localRepository{filesysdep: &mockFileSys, repoRoot: testRepoRoot}
 
 	// Call and validate mock expectations and return value
-	err := repo.RefreshPackage(contextMock, testPackage, version, mockDownload.Download)
+	err := repo.RefreshPackage(contextMock, testPackage, version, "mock-package-service", mockDownload.Download)
 	mockFileSys.AssertExpectations(t)
 	mockDownload.AssertExpectations(t)
 	assert.Nil(t, err)

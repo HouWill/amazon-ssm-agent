@@ -18,7 +18,6 @@ package repository_mock
 import (
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/installer"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/localpackages"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/model"
@@ -39,13 +38,13 @@ func (repoMock *MockedRepository) ValidatePackage(context context.T, packageName
 	return args.Error(0)
 }
 
-func (repoMock *MockedRepository) RefreshPackage(context context.T, packageName string, version string, downloader localpackages.DownloadDelegate) error {
-	args := repoMock.Called(context, packageName, version, downloader)
+func (repoMock *MockedRepository) RefreshPackage(context context.T, packageName string, version string, packageServiceName string, downloader localpackages.DownloadDelegate) error {
+	args := repoMock.Called(context, packageName, version, packageServiceName, downloader)
 	return args.Error(0)
 }
 
-func (repoMock *MockedRepository) AddPackage(context context.T, packageName string, version string, downloader localpackages.DownloadDelegate) error {
-	args := repoMock.Called(context, packageName, version, downloader)
+func (repoMock *MockedRepository) AddPackage(context context.T, packageName string, version string, packageServiceName string, downloader localpackages.DownloadDelegate) error {
+	args := repoMock.Called(context, packageName, version, packageServiceName, downloader)
 	return args.Error(0)
 }
 
@@ -71,9 +70,18 @@ func (repoMock *MockedRepository) GetInventoryData(context context.T) []model.Ap
 
 func (repoMock *MockedRepository) GetInstaller(context context.T,
 	configuration contracts.Configuration,
-	runner runpluginutil.PluginRunner,
 	packageName string,
 	version string) installer.Installer {
-	args := repoMock.Called(context, configuration, runner, packageName, version)
+	args := repoMock.Called(context, configuration, packageName, version)
 	return args.Get(0).(installer.Installer)
+}
+
+func (repoMock *MockedRepository) ReadManifest(packageName string, packageVersion string) ([]byte, error) {
+	args := repoMock.Called(packageName, packageVersion)
+	return args.Get(0).([]byte), args.Error(1)
+}
+
+func (repoMock *MockedRepository) WriteManifest(packageName string, packageVersion string, content []byte) error {
+	args := repoMock.Called(packageName, packageVersion, content)
+	return args.Error(0)
 }

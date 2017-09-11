@@ -31,7 +31,6 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil/artifact"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/log"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
@@ -518,7 +517,7 @@ func (m *updateManager) validateUpdate(log log.T,
 // TODO Make common methods go into utility/helper/common package. Check if Execute can be added to that package
 // Execute runs multiple sets of commands and returns their outputs.
 // res.Output will contain a slice of RunCommandPluginOutput.
-func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag, subDocumentRunner runpluginutil.PluginRunner) (res contracts.PluginResult) {
+func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag) (res contracts.PluginResult) {
 	log := context.Log()
 	log.Info("RunCommand started with update configuration for EC2 config update ", config)
 	util := new(updateutil.Utility)
@@ -536,20 +535,20 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 		return res
 	}
 
-	out := make([]contracts.PluginOutput, len(properties))
-	for i, prop := range properties {
+	out := contracts.PluginOutput{}
+	for _, prop := range properties {
 
 		if cancelFlag.ShutDown() {
-			out[i].ExitCode = 1
-			out[i].Status = contracts.ResultStatusFailed
-			break
-		} else if cancelFlag.Canceled() {
-			out[i].ExitCode = 1
-			out[i].Status = contracts.ResultStatusCancelled
+			out.MarkAsShutdown()
 			break
 		}
 
-		out[i] = updateAgent(p,
+		if cancelFlag.Canceled() {
+			out.MarkAsCancelled()
+			break
+		}
+
+		out.Merge(log, updateAgent(p,
 			config,
 			log,
 			manager,
@@ -557,14 +556,13 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 			prop,
 			config.OutputS3BucketName,
 			config.OutputS3KeyPrefix,
-			res.StartDateTime)
-
-		res.Code = out[i].ExitCode
-		res.Status = out[i].Status
-		res.Output = out[i].String()
-		res.StandardOutput = pluginutil.StringPrefix(out[i].Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
-		res.StandardError = pluginutil.StringPrefix(out[i].Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
+			res.StartDateTime))
 	}
+	res.Code = out.ExitCode
+	res.Status = out.Status
+	res.Output = out.String()
+	res.StandardOutput = pluginutil.StringPrefix(out.Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
+	res.StandardError = pluginutil.StringPrefix(out.Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
 
 	return
 }

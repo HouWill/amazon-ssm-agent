@@ -10,7 +10,7 @@
 // on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
 // either express or implied. See the License for the specific language governing
 // permissions and limitations under the License.
-//
+
 // Package pluginutil implements some common functions shared by multiple plugins.
 package pluginutil
 
@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"errors"
 
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
@@ -34,23 +36,12 @@ import (
 
 const (
 	defaultExecutionTimeoutInSeconds = 3600
-	maxExecutionTimeoutInSeconds     = 28800
+	maxExecutionTimeoutInSeconds     = 172800
 	minExecutionTimeoutInSeconds     = 5
 )
 
 // UploadOutputToS3BucketExecuter is a function that can upload outputs to S3 bucket.
 type UploadOutputToS3BucketExecuter func(log log.T, pluginID string, orchestrationDir string, outputS3BucketName string, outputS3KeyPrefix string, useTempDirectory bool, tempDir string, Stdout string, Stderr string) []string
-
-// S3Uploader is an interface for objects that can upload data to s3.
-type S3Uploader interface {
-	S3Upload(log log.T, bucketName string, bucketKey string, filePath string) error
-	UploadS3TestFile(log log.T, bucketName, key string) error
-	IsS3ErrorRelatedToAccessDenied(errMsg string) bool
-	IsS3ErrorRelatedToWrongBucketRegion(errMsg string) bool
-	GetS3BucketRegionFromErrorMsg(log log.T, errMsg string) string
-	GetS3ClientRegion() string
-	SetS3ClientRegion(region string)
-}
 
 // DefaultPlugin is the type for the default plugin.
 type DefaultPlugin struct {
@@ -59,9 +50,6 @@ type DefaultPlugin struct {
 
 	// ExecuteUploadOutputToS3Bucket is an object that can upload command outputs to S3 bucket.
 	ExecuteUploadOutputToS3Bucket UploadOutputToS3BucketExecuter
-
-	// Uploader is an object that can upload data to s3.
-	Uploader S3Uploader
 
 	// UploadToS3Sync is true if uploading to S3 should be done synchronously, false for async.
 	UploadToS3Sync bool
@@ -349,4 +337,54 @@ func GetProxySetting(proxyValue []string) (string, string) {
 	}
 
 	return url, noProxy
+}
+
+// ReplaceMarkedFields finds substrings delimited by the start and end markers,
+// removes the markers, and replaces the text between the markers with the result
+// of calling the fieldReplacer function on that text substring. For example, if
+// the input string is:  "a string with <a>text</a> marked"
+// the startMarker is:   "<a>"
+// the end marker is:    "</a>"
+// and fieldReplacer is: strings.ToUpper
+// then the output will be: "a string with TEXT marked"
+func ReplaceMarkedFields(str, startMarker, endMarker string, fieldReplacer func(string) string) (newStr string, err error) {
+	startIndex := strings.Index(str, startMarker)
+	newStr = ""
+	for startIndex >= 0 {
+		newStr += str[:startIndex]
+		fieldStart := str[startIndex+len(startMarker):]
+		endIndex := strings.Index(fieldStart, endMarker)
+		if endIndex < 0 {
+			err = errors.New("Found startMarker without endMarker!")
+			return
+		}
+		field := fieldStart[:endIndex]
+		transformedField := fieldReplacer(field)
+		newStr += transformedField
+		str = fieldStart[endIndex+len(endMarker):]
+		startIndex = strings.Index(str, startMarker)
+	}
+	newStr += str
+	return newStr, nil
+}
+
+// CleanupNewLines removes all newlines from the given input
+func CleanupNewLines(s string) string {
+	return strings.Replace(strings.Replace(s, "\n", "", -1), "\r", "", -1)
+}
+
+// CleanupJSONField converts a text to a json friendly text as follows:
+// - converts multi-line fields to single line by removing all but the first line
+// - escapes special characters
+// - truncates remaining line to length no more than maxSummaryLength
+func CleanupJSONField(field string) string {
+	res := field
+	endOfLinePos := strings.Index(res, "\n")
+	if endOfLinePos >= 0 {
+		res = res[0:endOfLinePos]
+	}
+	res = strings.Replace(res, `\`, `\\`, -1)
+	res = strings.Replace(res, `"`, `\"`, -1)
+	res = strings.Replace(res, "\t", `\t`, -1)
+	return res
 }

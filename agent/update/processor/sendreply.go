@@ -24,8 +24,8 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/log"
-	messageContracts "github.com/aws/amazon-ssm-agent/agent/message/contracts"
-	messageService "github.com/aws/amazon-ssm-agent/agent/message/service"
+	messageContracts "github.com/aws/amazon-ssm-agent/agent/runcommand/contracts"
+	messageService "github.com/aws/amazon-ssm-agent/agent/runcommand/mds"
 	"github.com/aws/amazon-ssm-agent/agent/times"
 )
 

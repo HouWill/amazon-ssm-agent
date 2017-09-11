@@ -21,13 +21,35 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/docmanager"
 	docModel "github.com/aws/amazon-ssm-agent/agent/docmanager/model"
 	"github.com/aws/amazon-ssm-agent/agent/log"
-	messageContract "github.com/aws/amazon-ssm-agent/agent/message/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
+	messageContract "github.com/aws/amazon-ssm-agent/agent/runcommand/contracts"
 )
+
+type AssocList []string
 
 var assocParser parserService = &assocParserService{}
 var assocBookkeeping bookkeepingService = &assocBookkeepingService{}
+
+//PluginAssociationInstances cached the number of associations attached to a specific type of plugin
+var pluginAssociationInstances = make(map[string]AssocList)
+
+func getPluginAssociationInstances() map[string]AssocList {
+	return pluginAssociationInstances
+}
+
+//TODO in future, platform calls will be stubbed
 var sys system = &systemImp{}
+
+// bookkeepingService represents the dependency for docmanager
+type bookkeepingService interface {
+	DeleteOldDocumentFolderLogs(log log.T, instanceID, orchestrationRootDirName string, retentionDurationHours int, isIntendedFileNameFormat func(string) bool, formOrchestrationFolderName func(string) string)
+}
+
+type assocBookkeepingService struct{}
+
+func (assocBookkeepingService) DeleteOldDocumentFolderLogs(log log.T, instanceID, orchestrationRootDirName string, retentionDurationHours int, isIntendedFileNameFormat func(string) bool, formOrchestrationFolderName func(string) string) {
+	docmanager.DeleteOldDocumentFolderLogs(log, instanceID, orchestrationRootDirName, retentionDurationHours, isIntendedFileNameFormat, formOrchestrationFolderName)
+}
 
 // system represents the dependency for platform
 type system interface {
@@ -47,46 +69,28 @@ func (systemImp) IsManagedInstance() (bool, error) {
 	return platform.IsManagedInstance()
 }
 
-// bookkeepingService represents the dependency for docmanager
-type bookkeepingService interface {
-	PersistData(log log.T, documentID, instanceID, locationFolder string, object interface{})
-	IsDocumentCurrentlyExecuting(documentID, instanceID string) bool
-}
-
-type assocBookkeepingService struct{}
-
-// PersistData wraps docmanager PersistData
-func (assocBookkeepingService) PersistData(log log.T, documentID, instanceID, locationFolder string, object interface{}) {
-	docmanager.PersistData(log, documentID, instanceID, locationFolder, object)
-}
-
-// IsDocumentExist wraps docmanager IsDocumentExist
-func (assocBookkeepingService) IsDocumentCurrentlyExecuting(documentID, instanceID string) bool {
-	return docmanager.IsDocumentCurrentlyExecuting(documentID, instanceID)
-}
-
 // parserService represents the dependency for association parser
 type parserService interface {
-	ParseDocumentWithParams(log log.T, rawData *model.InstanceAssociation) (*messageContract.SendCommandPayload, error)
+	ParseDocumentForPayload(log log.T, rawData *model.InstanceAssociation) (*messageContract.SendCommandPayload, error)
 	InitializeDocumentState(context context.T,
 		payload *messageContract.SendCommandPayload,
-		rawData *model.InstanceAssociation) docModel.DocumentState
+		rawData *model.InstanceAssociation) (docModel.DocumentState, error)
 }
 
 type assocParserService struct{}
 
 // ParseDocumentWithParams wraps parser ParseDocumentWithParams
-func (assocParserService) ParseDocumentWithParams(
+func (assocParserService) ParseDocumentForPayload(
 	log log.T,
 	rawData *model.InstanceAssociation) (*messageContract.SendCommandPayload, error) {
 
-	return parser.ParseDocumentWithParams(log, rawData)
+	return parser.ParseDocumentForPayload(log, rawData)
 }
 
 // InitializeDocumentState wraps engine InitializeCommandState
 func (assocParserService) InitializeDocumentState(context context.T,
 	payload *messageContract.SendCommandPayload,
-	rawData *model.InstanceAssociation) docModel.DocumentState {
+	rawData *model.InstanceAssociation) (docModel.DocumentState, error) {
 
 	return parser.InitializeDocumentState(context, payload, rawData)
 }

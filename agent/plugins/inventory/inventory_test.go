@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/aws/amazon-ssm-agent/agent/context"
+	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/model"
 	"github.com/stretchr/testify/assert"
@@ -167,7 +168,7 @@ func TestVerifyInventoryDataSize(t *testing.T) {
 	//small inventory item
 	items = MockInventoryItems()
 	smallItem = items[0]
-	largeItem = LargeInventoryItem(1024 * 1024)
+	largeItem = LargeInventoryItem(1024 * 10240)
 
 	//TESTING
 	//testing normal scenario when both item and items are within size limits
@@ -180,5 +181,21 @@ func TestVerifyInventoryDataSize(t *testing.T) {
 	items = append(items, largeItem)
 	result = p.VerifyInventoryDataSize(smallItem, items)
 
-	assert.Equal(t, false, result, "Expected to return false when items size is greater than 1024")
+	assert.Equal(t, false, result, "Expected to return false when items size is greater than the limit")
+}
+
+func TestPlugin_IsMulitpleAssociationPresent(t *testing.T) {
+	var gatherers []string
+
+	gatherers = append(gatherers, "RandomGatherer")
+
+	//setup
+	//mock inventory plugin
+	p, _ := MockInventoryPlugin(gatherers, gatherers)
+	config := contracts.Configuration{
+		CurrentAssociations: []string{"testAssociationID", "testAssociationID2"},
+	}
+	status, other := p.IsMulitpleAssociationPresent("testAssociationID", config)
+	assert.True(t, status)
+	assert.Equal(t, "testAssociationID2", other)
 }

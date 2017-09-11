@@ -27,18 +27,25 @@ type Trace struct {
 
 // PackageResult contains all data collected in one install/upgrade/uninstall and gets reported back to PackageService
 type PackageResult struct {
-	PackageName string
-	Version     string
-	Operation   string
-	Timing      int64
-	Exitcode    int64
-	Environment map[string]string
-	Trace       map[string]Trace
+	PackageName            string
+	Version                string
+	PreviousPackageVersion string
+	Operation              string
+	Timing                 int64
+	Exitcode               int64
+	Environment            map[string]string
+	Trace                  map[string]Trace
 }
 
 // PackageService is used to determine the latest version and to obtain the local repository content for a given version.
 type PackageService interface {
+	PackageServiceName() string
 	DownloadManifest(log log.T, packageName string, version string) (string, error)
 	DownloadArtifact(log log.T, packageName string, version string) (string, error)
 	ReportResult(log log.T, result PackageResult) error
 }
+
+const (
+	PackageServiceName_ssms3       = "ssms3"
+	PackageServiceName_birdwatcher = "birdwatcher"
+)

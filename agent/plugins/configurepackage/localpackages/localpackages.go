@@ -25,8 +25,9 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
+	"github.com/aws/amazon-ssm-agent/agent/fileutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/installer"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/ssminstaller"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/model"
@@ -58,18 +59,25 @@ const (
 type Repository interface {
 	GetInstalledVersion(context context.T, packageName string) string
 	ValidatePackage(context context.T, packageName string, version string) error
-	RefreshPackage(context context.T, packageName string, version string, downloader DownloadDelegate) error
-	AddPackage(context context.T, packageName string, version string, downloader DownloadDelegate) error
+	RefreshPackage(context context.T, packageName string, version string, packageServiceName string, downloader DownloadDelegate) error
+	AddPackage(context context.T, packageName string, version string, packageServiceName string, downloader DownloadDelegate) error
 	SetInstallState(context context.T, packageName string, version string, state InstallState) error
 	GetInstallState(context context.T, packageName string) (state InstallState, version string)
 	RemovePackage(context context.T, packageName string, version string) error
 	GetInventoryData(context context.T) []model.ApplicationData
-	GetInstaller(context context.T, configuration contracts.Configuration, runner runpluginutil.PluginRunner, packageName string, version string) installer.Installer
+	GetInstaller(context context.T, configuration contracts.Configuration, packageName string, version string) installer.Installer
+
+	ReadManifest(packageName string, packageVersion string) ([]byte, error)
+	WriteManifest(packageName string, packageVersion string, content []byte) error
 }
 
 // NewRepository is the factory method for the package repository with default file system dependencies
 func NewRepository() Repository {
-	return &localRepository{filesysdep: &fileSysDepImp{}, repoRoot: appconfig.PackageRoot}
+	return &localRepository{
+		filesysdep:        &fileSysDepImp{},
+		repoRoot:          appconfig.PackageRoot,
+		manifestCachePath: appconfig.ManifestCacheDirectory,
+	}
 }
 
 // PackageInstallState represents the json structure of the current package state
@@ -95,15 +103,15 @@ type PackageManifest struct {
 }
 
 type localRepository struct {
-	filesysdep FileSysDep
-	repoRoot   string
+	filesysdep        FileSysDep
+	repoRoot          string
+	manifestCachePath string
 }
 
 // GetInstaller returns an Installer appropriate for the package and version
 // The configuration should include the appropriate OutputS3KeyPrefix for documents run by the Installer
 func (repo *localRepository) GetInstaller(context context.T,
 	configuration contracts.Configuration,
-	runner runpluginutil.PluginRunner,
 	packageName string,
 	version string) installer.Installer {
 
@@ -113,7 +121,7 @@ func (repo *localRepository) GetInstaller(context context.T,
 		version,
 		repo.getPackageVersionPath(packageName, version),
 		configuration,
-		runner)
+		&envdetect.CollectorImp{})
 }
 
 // GetInstalledVersion returns the version of the last successfully installed package
@@ -143,12 +151,12 @@ func (repo *localRepository) ValidatePackage(context context.T, packageName stri
 }
 
 // RefreshPackage updates the package binaries.  Used if ValidatePackage returns an error, initially same implementation as AddPackage
-func (repo *localRepository) RefreshPackage(context context.T, packageName string, version string, downloader DownloadDelegate) error {
-	return repo.AddPackage(context, packageName, version, downloader)
+func (repo *localRepository) RefreshPackage(context context.T, packageName string, version string, packageServiceName string, downloader DownloadDelegate) error {
+	return repo.AddPackage(context, packageName, version, packageServiceName, downloader)
 }
 
 // AddPackage creates an entry in the repository and downloads artifacts for a package
-func (repo *localRepository) AddPackage(context context.T, packageName string, version string, downloader DownloadDelegate) error {
+func (repo *localRepository) AddPackage(context context.T, packageName string, version string, packageServiceName string, downloader DownloadDelegate) error {
 	packagePath := repo.getPackageVersionPath(packageName, version)
 	if err := repo.filesysdep.MakeDirExecute(packagePath); err != nil {
 		return err
@@ -230,6 +238,27 @@ func (repo *localRepository) GetInventoryData(context context.T) []model.Applica
 	return result
 }
 
+// manifest cache
+
+// filePath will return the manifest file path for a package name and package version
+func (r *localRepository) filePath(packageName string, packageVersion string) string {
+	return filepath.Join(r.manifestCachePath, fmt.Sprintf("%s_%s.json", normalizeDirectory(packageName), normalizeDirectory(packageVersion)))
+}
+
+// ReadManifest will return the manifest data for a given package name and package version from the cache
+func (r *localRepository) ReadManifest(packageName string, packageVersion string) ([]byte, error) {
+	return r.filesysdep.ReadFile(r.filePath(packageName, packageVersion))
+}
+
+// ReadManifest will put the manifest data for a given package name and package version into the cache
+func (r *localRepository) WriteManifest(packageName string, packageVersion string, content []byte) error {
+	err := fileutil.MakeDirs(r.manifestCachePath)
+	if err != nil {
+		return err
+	}
+	return r.filesysdep.WriteFile(r.filePath(packageName, packageVersion), string(content))
+}
+
 // hasInventoryData determines if a package should be reported to inventory by the repository
 // if false, it is assumed that the package used an installer type that is already collected by inventory
 func hasInventoryData(manifest *PackageManifest) bool {
@@ -274,8 +303,8 @@ func (repo *localRepository) getPackageVersionPath(packageName string, version s
 }
 
 // getManifestPath is a helper function that builds the path to the manifest file for a given version of a package
-func (repo *localRepository) getManifestPath(packageName string, version string) string {
-	return filepath.Join(repo.getPackageVersionPath(packageName, version), fmt.Sprintf("%v.json", packageName))
+func (repo *localRepository) getManifestPath(packageName string, version string, manifestName string) string {
+	return filepath.Join(repo.getPackageVersionPath(packageName, version), fmt.Sprintf("%v.json", manifestName))
 }
 
 // loadInstallState loads the existing installstate file or returns an appropriate default state
@@ -303,12 +332,17 @@ func (repo *localRepository) loadInstallState(filesysdep FileSysDep, context con
 
 // openPackageManifest returns the valid manifest or validation error for a given package version
 func (repo *localRepository) openPackageManifest(filesysdep FileSysDep, packageName string, version string) (manifest *PackageManifest, err error) {
-	manifestPath := repo.getManifestPath(packageName, version)
-	if !filesysdep.Exists(manifestPath) {
-		return nil, fmt.Errorf("No manifest found for package %v, version %v", packageName, version)
-	} else {
+	manifestPath := repo.getManifestPath(packageName, version, packageName)
+	if filesysdep.Exists(manifestPath) {
 		return parsePackageManifest(filesysdep, manifestPath, packageName, version)
 	}
+
+	manifestPath = repo.getManifestPath(packageName, version, "manifest")
+	if filesysdep.Exists(manifestPath) {
+		return parsePackageManifest(filesysdep, manifestPath, packageName, version)
+	}
+
+	return &PackageManifest{}, nil
 }
 
 // parsePackageManifest parses the manifest to ensure it is valid.
@@ -347,7 +381,6 @@ func validatePackageManifest(parsedManifest *PackageManifest, packageName string
 			return fmt.Errorf("manifest version (%v) does not match expected package version (%v)", manifestVersion, version)
 		}
 	}
-	// TODO:MF: see if we can remove platform and arch.  We don't really use them... arch shows up in inventory but does it need to for SSM Packages?  If the SSM Package installs an rpm, for example, arch will be present there.
 
 	return nil
 }

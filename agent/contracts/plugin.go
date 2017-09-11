@@ -41,6 +41,7 @@ var (
 
 // PluginResult represents a plugin execution result.
 type PluginResult struct {
+	PluginID           string       `json:"pluginID"`
 	PluginName         string       `json:"pluginName"`
 	Status             ResultStatus `json:"status"`
 	Code               int          `json:"code"`
@@ -89,6 +90,7 @@ type Configuration struct {
 	DefaultWorkingDirectory string
 	Preconditions           map[string][]string
 	IsPreconditionEnabled   bool
+	CurrentAssociations     []string
 }
 
 // Plugin wraps the plugin configuration and plugin result.
@@ -107,6 +109,15 @@ type PluginOutput struct {
 	Status   ResultStatus
 	Stdout   string
 	Stderr   string
+}
+
+func (p *PluginOutput) Merge(log log.T, mergeOutput PluginOutput) {
+	p.AppendInfo(log, mergeOutput.Stdout)
+	p.AppendError(log, mergeOutput.Stderr)
+	if p.ExitCode == 0 {
+		p.ExitCode = mergeOutput.ExitCode
+	}
+	p.Status = MergeResultStatus(p.Status, mergeOutput.Status)
 }
 
 func (p *PluginOutput) String() (response string) {
@@ -141,6 +152,18 @@ func (out *PluginOutput) MarkAsInProgress() {
 func (out *PluginOutput) MarkAsSuccessWithReboot() {
 	out.ExitCode = 0
 	out.Status = ResultStatusSuccessAndReboot
+}
+
+// MarkAsCancelled marks a plugin as Cancelled.
+func (out *PluginOutput) MarkAsCancelled() {
+	out.ExitCode = 1
+	out.Status = ResultStatusCancelled
+}
+
+// MarkAsShutdown marks a plugin as Failed in the case of interruption due to shutdown signal.
+func (out *PluginOutput) MarkAsShutdown() {
+	out.ExitCode = 1
+	out.Status = ResultStatusCancelled
 }
 
 // AppendInfo adds info to PluginOutput StandardOut.

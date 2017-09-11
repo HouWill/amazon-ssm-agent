@@ -27,7 +27,6 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/log"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
@@ -102,7 +101,7 @@ type convert func(log.T, string, []string, string, string, string, string, bool)
 
 // Execute runs multiple sets of commands and returns their outputs.
 // res.Output will contain a slice of RunCommandPluginOutput.
-func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag, subDocumentRunner runpluginutil.PluginRunner) (res contracts.PluginResult) {
+func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag) (res contracts.PluginResult) {
 	log := context.Log()
 	log.Infof("%v started with configuration %v", Name(), config)
 	res.StartDateTime = time.Now()
@@ -118,35 +117,26 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 	var out contracts.PluginOutput
 
 	if cancelFlag.ShutDown() {
-		res.Code = 1
-		res.Status = contracts.ResultStatusFailed
-		pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
-		return
+		out.MarkAsShutdown()
+	} else if cancelFlag.Canceled() {
+		out.MarkAsCancelled()
+	} else {
+		util := updateutil.Utility{CustomUpdateExecutionTimeoutInSeconds: UpdateExecutionTimeoutInSeconds}
+		utilExe = util.ExeCommandOutput
+		out = p.runCommandsRawInput(log, config.PluginID, properties, config.OrchestrationDirectory, cancelFlag, config.OutputS3BucketName, config.OutputS3KeyPrefix, utilExe)
+
+		if out.Status == contracts.ResultStatusFailed {
+			out.AppendInfo(log, "Domain join failed.")
+		} else if out.Status == contracts.ResultStatusSuccess {
+			out.AppendInfo(log, "Domain join succeeded.")
+		}
+
+		res.Code = out.ExitCode
+		res.Status = out.Status
+		res.Output = out.String()
+		res.StandardOutput = pluginutil.StringPrefix(out.Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
+		res.StandardError = pluginutil.StringPrefix(out.Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
 	}
-
-	if cancelFlag.Canceled() {
-		res.Code = 1
-		res.Status = contracts.ResultStatusCancelled
-		pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
-		return
-	}
-
-	util := updateutil.Utility{CustomUpdateExecutionTimeoutInSeconds: UpdateExecutionTimeoutInSeconds}
-	utilExe = util.ExeCommandOutput
-	out = p.runCommandsRawInput(log, config.PluginID, properties, config.OrchestrationDirectory, cancelFlag, config.OutputS3BucketName, config.OutputS3KeyPrefix, utilExe)
-
-	if out.Status == contracts.ResultStatusFailed {
-		out.AppendInfo(log, "Domain join failed.")
-	} else if out.Status == contracts.ResultStatusSuccess {
-		out.AppendInfo(log, "Domain join succeeded.")
-	}
-
-	res.Code = out.ExitCode
-	res.Status = out.Status
-	res.Output = out.String()
-	res.StandardOutput = pluginutil.StringPrefix(out.Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
-	res.StandardError = pluginutil.StringPrefix(out.Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
-
 	pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
 
 	return res

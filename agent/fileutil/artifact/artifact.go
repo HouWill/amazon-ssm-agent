@@ -31,6 +31,7 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
 	"github.com/aws/amazon-ssm-agent/agent/log"
 	"github.com/aws/amazon-ssm-agent/agent/s3util"
+	"github.com/aws/amazon-ssm-agent/agent/sdkutil"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -116,20 +117,41 @@ func httpDownload(log log.T, fileURL string, destFile string) (output DownloadOu
 
 // awsConfig creates a config and sets region and credential information given an S3 URL
 func awsConfig(log log.T, amazonS3URL s3util.AmazonS3URL) (config *aws.Config, err error) {
-	config = &aws.Config{}
+	config = sdkutil.AwsConfig()
 	var appConfig appconfig.SsmagentConfig
 	appConfig, errConfig := appconfig.Config(false)
 	if errConfig != nil {
 		log.Error("failed to read appconfig.")
 	} else {
-		creds, err1 := appConfig.ProfileCredentials()
-		if err1 != nil {
-			config.Credentials = creds
+		if appConfig.S3.Endpoint != "" {
+			config.Endpoint = &appConfig.S3.Endpoint
 		}
 	}
 	config.S3ForcePathStyle = aws.Bool(amazonS3URL.IsPathStyle)
 	config.Region = aws.String(amazonS3URL.Region)
 	return config, nil
+}
+
+// CanGetS3Object returns true if it is possible to fetch an object because it exists, is not deleted, and read permissions exist for this request
+func CanGetS3Object(log log.T, amazonS3URL s3util.AmazonS3URL) bool {
+	config, _ := awsConfig(log, amazonS3URL)
+	bucketName := amazonS3URL.Bucket
+	objectKey := amazonS3URL.Key
+
+	params := &s3.HeadObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(objectKey),
+	}
+
+	s3client := s3.New(session.New(config))
+	var res *s3.HeadObjectOutput
+	var err error
+	if res, err = s3client.HeadObject(params); err != nil {
+		log.Debugf("CanGetS3Object err: %v", err)
+		return false
+	}
+	// Even with versioning on, a deleted object should return a 404, but to be certain, exclude delete markers explicitly
+	return res.DeleteMarker == nil || !*(res.DeleteMarker)
 }
 
 // ListS3Folders returns the folders under a given S3 URL where folders are keys whose prefix is the URL key

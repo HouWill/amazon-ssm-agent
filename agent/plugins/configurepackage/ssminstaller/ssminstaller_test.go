@@ -23,7 +23,10 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/docmanager/model"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
+	"github.com/aws/amazon-ssm-agent/agent/fileutil"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect/ec2infradetect"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect/osdetect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -46,14 +49,39 @@ func TestPackageVersion(t *testing.T) {
 	assert.Equal(t, testVersion, inst.version)
 }
 
-func TestReadAction(t *testing.T) {
+func mockReadAction(t *testing.T, mockFileSys *MockedFileSys, actionPathNoExt string, contentSh []byte, contentPs1 []byte, contentJson []byte, expectReads bool) {
 	// Setup mock with expectations
+	mockFileSys.On("Exists", actionPathNoExt+".sh").Return(len(contentSh) != 0).Once()
+	mockFileSys.On("Exists", actionPathNoExt+".ps1").Return(len(contentPs1) != 0).Once()
+	mockFileSys.On("Exists", actionPathNoExt+".json").Return(len(contentJson) != 0).Once()
+
+	if expectReads {
+		if len(contentSh) != 0 {
+			mockFileSys.On("ReadFile", actionPathNoExt+".sh").Return(contentSh, nil).Once()
+		}
+		if len(contentPs1) != 0 {
+			mockFileSys.On("ReadFile", actionPathNoExt+".ps1").Return(contentPs1, nil).Once()
+		}
+		if len(contentJson) != 0 {
+			mockFileSys.On("ReadFile", actionPathNoExt+".json").Return(contentJson, nil).Once()
+		}
+	}
+}
+
+var environmentStub = envdetect.Environment{
+	&osdetect.OperatingSystem{"abc", "567", "", "xyz", "", ""},
+	&ec2infradetect.Ec2Infrastructure{"instanceIDX", "Reg1", "", "AZ1", "instanceTypeZ"},
+}
+
+func testReadAction(t *testing.T, actionPathNoExt string, contentSh []byte, contentPs1 []byte, contentJson []byte, expectReads bool) {
 	mockFileSys := MockedFileSys{}
-	mockFileSys.On("Exists", path.Join(testPackagePath, "Foo.json")).Return(true).Once()
-	mockFileSys.On("ReadFile", path.Join(testPackagePath, "Foo.json")).Return(loadFile(t, path.Join(testPackagePath, "valid-action.json")), nil).Once()
+	mockReadAction(t, &mockFileSys, actionPathNoExt, contentSh, contentPs1, contentJson, expectReads)
+
+	mockEnvdetectCollector := &envdetect.CollectorMock{}
+	mockEnvdetectCollector.On("CollectData", mock.Anything).Return(&environmentStub, nil).Once()
 
 	// Instantiate installer with mock
-	inst := Installer{filesysdep: &mockFileSys, packagePath: testPackagePath}
+	inst := Installer{filesysdep: &mockFileSys, packagePath: testPackagePath, envdetectCollector: mockEnvdetectCollector}
 
 	// Call and validate mock expectations and return value
 	exists, actionDoc, workingDir, err := inst.readAction(contextMock, "Foo")
@@ -64,14 +92,15 @@ func TestReadAction(t *testing.T) {
 	assert.Nil(t, err)
 }
 
-func TestReadActionInvalid(t *testing.T) {
-	// Setup mock with expectations
+func testReadActionInvalid(t *testing.T, actionPathNoExt string, contentSh []byte, contentPs1 []byte, contentJson []byte, expectReads bool) {
 	mockFileSys := MockedFileSys{}
-	mockFileSys.On("Exists", path.Join(testPackagePath, "Foo.json")).Return(true).Once()
-	mockFileSys.On("ReadFile", path.Join(testPackagePath, "Foo.json")).Return(loadFile(t, path.Join(testPackagePath, "invalid-action.json")), nil).Once()
+	mockReadAction(t, &mockFileSys, actionPathNoExt, contentSh, contentPs1, contentJson, expectReads)
+
+	mockEnvdetectCollector := &envdetect.CollectorMock{}
+	mockEnvdetectCollector.On("CollectData", mock.Anything).Return(&environmentStub, nil).Once()
 
 	// Instantiate installer with mock
-	inst := Installer{filesysdep: &mockFileSys, packagePath: testPackagePath}
+	inst := Installer{filesysdep: &mockFileSys, packagePath: testPackagePath, envdetectCollector: mockEnvdetectCollector}
 
 	// Call and validate mock expectations and return value
 	exists, actionDoc, workingDir, err := inst.readAction(contextMock, "Foo")
@@ -82,16 +111,31 @@ func TestReadActionInvalid(t *testing.T) {
 	assert.NotNil(t, err)
 }
 
-func TestReadActionMissing(t *testing.T) {
-	// Setup mock with expectations
-	mockFileSys := MockedFileSys{}
-	mockFileSys.On("Exists", path.Join(testPackagePath, "Foo.json")).Return(false).Once()
+func TestReadAction(t *testing.T) {
+	actionPathNoExt := path.Join(testPackagePath, "Foo")
+	testReadAction(t, actionPathNoExt, []byte("echo sh"), []byte{}, []byte{}, false)
+	testReadAction(t, actionPathNoExt, []byte{}, append(fileutil.CreateUTF8ByteOrderMark(), []byte("Write-Host ps1 with BOM")...), []byte{}, false)
+	testReadAction(t, actionPathNoExt, []byte{}, []byte{}, loadFile(t, path.Join(testPackagePath, "valid-action.json")), true)
+}
 
-	// Instantiate installer with mock
-	inst := Installer{filesysdep: &mockFileSys, packagePath: testPackagePath}
+func TestReadActionInvalid(t *testing.T) {
+	actionPathNoExt := path.Join(testPackagePath, "Foo")
+	testReadActionInvalid(t, actionPathNoExt, []byte{}, []byte{}, loadFile(t, path.Join(testPackagePath, "invalid-action.json")), true)
+}
+
+func TestReadActionMissing(t *testing.T) {
+	mockFileSys := MockedFileSys{}
+	actionPathNoExt := path.Join(testPackagePath, "Foo")
+	mockReadAction(t, &mockFileSys, actionPathNoExt, []byte{}, []byte{}, []byte{}, false)
+
+	mockEnvdetectCollector := &envdetect.CollectorMock{}
+	mockEnvdetectCollector.On("CollectData", mock.Anything).Return(&environmentStub, nil).Once()
+
+	// Instantiate repository with mock
+	repo := Installer{filesysdep: &mockFileSys, packagePath: testPackagePath, envdetectCollector: mockEnvdetectCollector}
 
 	// Call and validate mock expectations and return value
-	exists, actionDoc, workingDir, err := inst.readAction(contextMock, "Foo")
+	exists, actionDoc, workingDir, err := repo.readAction(contextMock, "Foo")
 	mockFileSys.AssertExpectations(t)
 	assert.False(t, exists)
 	assert.Empty(t, actionDoc)
@@ -99,20 +143,49 @@ func TestReadActionMissing(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func testReadActionTooManyActionImplementations(t *testing.T, existSh bool, existPs1 bool, existJson bool) {
+	mockFileSys := MockedFileSys{}
+	actionPathNoExt := path.Join(testPackagePath, "Foo")
+	mockFileSys.On("Exists", actionPathNoExt+".sh").Return(existSh).Once()
+	mockFileSys.On("Exists", actionPathNoExt+".ps1").Return(existPs1).Once()
+	mockFileSys.On("Exists", actionPathNoExt+".json").Return(existJson).Once()
+
+	mockEnvdetectCollector := &envdetect.CollectorMock{}
+	mockEnvdetectCollector.On("CollectData", mock.Anything).Return(&environmentStub, nil).Once()
+
+	// Instantiate repository with mock
+	repo := Installer{filesysdep: &mockFileSys, packagePath: testPackagePath, envdetectCollector: mockEnvdetectCollector}
+
+	// Call and validate mock expectations and return value
+	exists, actionDoc, workingDir, err := repo.readAction(contextMock, "Foo")
+	mockFileSys.AssertExpectations(t)
+	assert.True(t, exists)
+	assert.Empty(t, actionDoc)
+	assert.Empty(t, workingDir)
+	assert.NotNil(t, err)
+}
+
+func TestReadActionTooManyActionImplementations(t *testing.T) {
+	testReadActionTooManyActionImplementations(t, false, true, true)
+	testReadActionTooManyActionImplementations(t, true, false, true)
+	testReadActionTooManyActionImplementations(t, true, true, false)
+	testReadActionTooManyActionImplementations(t, true, true, true)
+}
+
 func TestInstall_ExecuteError(t *testing.T) {
 	// Setup mocks with expectations
 	mockFileSys := MockedFileSys{}
-	mockFileSys.On("Exists", path.Join(testPackagePath, "install.json")).Return(true).Once()
-	mockFileSys.On("ReadFile", path.Join(testPackagePath, "install.json")).Return(loadFile(t, path.Join(testPackagePath, "valid-action.json")), nil).Once()
+	actionPathNoExt := path.Join(testPackagePath, "install")
+	mockReadAction(t, &mockFileSys, actionPathNoExt, []byte{}, []byte{}, loadFile(t, path.Join(testPackagePath, "valid-action.json")), true)
 
-	plugin := model.PluginState{}
-	plugins := []model.PluginState{plugin}
 	mockExec := MockedExec{}
-	mockExec.On("ParseDocument", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(plugins, nil).Once()
 	mockExec.On("ExecuteDocument", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(map[string]*contracts.PluginResult{"Foo": {StandardError: "execute error"}}).Once()
 
+	mockEnvdetectCollector := &envdetect.CollectorMock{}
+	mockEnvdetectCollector.On("CollectData", mock.Anything).Return(&environmentStub, nil).Once()
+
 	// Instantiate installer with mock
-	inst := Installer{filesysdep: &mockFileSys, execdep: &mockExec, packagePath: testPackagePath}
+	inst := Installer{filesysdep: &mockFileSys, execdep: &mockExec, packagePath: testPackagePath, envdetectCollector: mockEnvdetectCollector}
 
 	// Call and validate mock expectations and return value
 	output := inst.Install(contextMock)
@@ -125,11 +198,15 @@ func TestInstall_ExecuteError(t *testing.T) {
 func TestValidate_NoAction(t *testing.T) {
 	// Setup mocks with expectations
 	mockFileSys := MockedFileSys{}
-	mockFileSys.On("Exists", path.Join(testPackagePath, "validate.json")).Return(false).Once()
+	actionPathNoExt := path.Join(testPackagePath, "validate")
+	mockReadAction(t, &mockFileSys, actionPathNoExt, []byte{}, []byte{}, []byte{}, true)
 	mockExec := MockedExec{}
 
+	mockEnvdetectCollector := &envdetect.CollectorMock{}
+	mockEnvdetectCollector.On("CollectData", mock.Anything).Return(&environmentStub, nil).Once()
+
 	// Instantiate installer with mock
-	inst := Installer{filesysdep: &mockFileSys, execdep: &mockExec, packagePath: testPackagePath}
+	inst := Installer{filesysdep: &mockFileSys, execdep: &mockExec, packagePath: testPackagePath, envdetectCollector: mockEnvdetectCollector}
 
 	// Call and validate mock expectations and return value
 	output := inst.Validate(contextMock)
@@ -143,20 +220,21 @@ func TestValidate_NoAction(t *testing.T) {
 func TestUninstall_Success(t *testing.T) {
 	// Setup mocks with expectations
 	mockFileSys := MockedFileSys{}
-	mockFileSys.On("Exists", path.Join(testPackagePath, "uninstall.json")).Return(true).Once()
-	mockFileSys.On("ReadFile", path.Join(testPackagePath, "uninstall.json")).Return(loadFile(t, path.Join(testPackagePath, "valid-action.json")), nil).Once()
+	actionPathNoExt := path.Join(testPackagePath, "uninstall")
+	mockReadAction(t, &mockFileSys, actionPathNoExt, []byte{}, []byte{}, loadFile(t, path.Join(testPackagePath, "valid-action.json")), true)
 
-	plugin := model.PluginState{}
-	plugins := []model.PluginState{plugin}
 	mockExec := MockedExec{}
-	mockExec.On("ParseDocument", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(plugins, nil).Once()
 	mockExec.On("ExecuteDocument", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(map[string]*contracts.PluginResult{"Foo": {Status: contracts.ResultStatusSuccess}}).Once()
+
+	mockEnvdetectCollector := &envdetect.CollectorMock{}
+	mockEnvdetectCollector.On("CollectData", mock.Anything).Return(&environmentStub, nil).Once()
 
 	// Instantiate installer with mock
 	inst := Installer{filesysdep: &mockFileSys,
-		execdep:     &mockExec,
-		packagePath: testPackagePath,
-		config:      contracts.Configuration{OutputS3BucketName: "foo", OutputS3KeyPrefix: "bar"}}
+		execdep:            &mockExec,
+		packagePath:        testPackagePath,
+		config:             contracts.Configuration{OutputS3BucketName: "foo", OutputS3KeyPrefix: "bar"},
+		envdetectCollector: mockEnvdetectCollector}
 
 	// Call and validate mock expectations and return value
 	output := inst.Uninstall(contextMock)
@@ -208,11 +286,10 @@ func (execMock *MockedExec) ParseDocument(
 }
 
 func (execMock *MockedExec) ExecuteDocument(
-	runner runpluginutil.PluginRunner,
 	context context.T,
 	pluginInput []model.PluginState,
 	documentID string,
 	documentCreatedDate string) (pluginOutputs map[string]*contracts.PluginResult) {
-	args := execMock.Called(runner, context, pluginInput, documentID, documentCreatedDate)
+	args := execMock.Called(context, pluginInput, documentID, documentCreatedDate)
 	return args.Get(0).(map[string]*contracts.PluginResult)
 }

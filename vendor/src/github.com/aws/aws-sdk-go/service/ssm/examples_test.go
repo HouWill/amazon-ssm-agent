@@ -93,6 +93,7 @@ func ExampleSSM_CreateAssociation() {
 
 	params := &ssm.CreateAssociationInput{
 		Name:            aws.String("DocumentName"), // Required
+		AssociationName: aws.String("AssociationName"),
 		DocumentVersion: aws.String("DocumentVersion"),
 		InstanceId:      aws.String("InstanceId"),
 		OutputLocation: &ssm.InstanceAssociationOutputLocation{
@@ -141,6 +142,7 @@ func ExampleSSM_CreateAssociationBatch() {
 		Entries: []*ssm.CreateAssociationBatchRequestEntry{ // Required
 			{ // Required
 				Name:            aws.String("DocumentName"), // Required
+				AssociationName: aws.String("AssociationName"),
 				DocumentVersion: aws.String("DocumentVersion"),
 				InstanceId:      aws.String("InstanceId"),
 				OutputLocation: &ssm.InstanceAssociationOutputLocation{
@@ -189,9 +191,10 @@ func ExampleSSM_CreateDocument() {
 	svc := ssm.New(session.New())
 
 	params := &ssm.CreateDocumentInput{
-		Content:      aws.String("DocumentContent"), // Required
-		Name:         aws.String("DocumentName"),    // Required
-		DocumentType: aws.String("DocumentType"),
+		Content:        aws.String("DocumentContent"), // Required
+		Name:           aws.String("DocumentName"),    // Required
+		DocumentFormat: aws.String("DocumentFormat"),
+		DocumentType:   aws.String("DocumentType"),
 	}
 	resp, err := svc.CreateDocument(params)
 
@@ -300,10 +303,11 @@ func ExampleSSM_CreateResourceDataSync() {
 
 	params := &ssm.CreateResourceDataSyncInput{
 		S3Destination: &ssm.ResourceDataSyncS3Destination{ // Required
-			BucketName: aws.String("ResourceDataSyncS3BucketName"), // Required
-			Region:     aws.String("ResourceDataSyncS3Region"),     // Required
-			SyncFormat: aws.String("ResourceDataSyncS3Format"),     // Required
-			Prefix:     aws.String("ResourceDataSyncS3Prefix"),
+			BucketName:   aws.String("ResourceDataSyncS3BucketName"), // Required
+			Region:       aws.String("ResourceDataSyncS3Region"),     // Required
+			SyncFormat:   aws.String("ResourceDataSyncS3Format"),     // Required
+			AWSKMSKeyARN: aws.String("ResourceDataSyncAWSKMSKeyARN"),
+			Prefix:       aws.String("ResourceDataSyncS3Prefix"),
 		},
 		SyncName: aws.String("ResourceDataSyncName"), // Required
 	}
@@ -348,6 +352,28 @@ func ExampleSSM_DeleteAssociation() {
 		Name:          aws.String("DocumentName"),
 	}
 	resp, err := svc.DeleteAssociation(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
+}
+
+func ExampleSSM_DeleteCommands() {
+	svc := ssm.New(session.New())
+
+	params := &ssm.DeleteCommandsInput{
+		CommandIds: []*string{ // Required
+			aws.String("CommandId"), // Required
+			// More values...
+		},
+	}
+	resp, err := svc.DeleteCommands(params)
 
 	if err != nil {
 		// Print the error, cast err to awserr.Error to get the Code and
@@ -626,6 +652,27 @@ func ExampleSSM_DescribeAutomationActions() {
 	fmt.Println(resp)
 }
 
+func ExampleSSM_DescribeAutomationExecutionParameters() {
+	svc := ssm.New(session.New())
+
+	params := &ssm.DescribeAutomationExecutionParametersInput{
+		AutomationExecutionId: aws.String("AutomationExecutionId"),
+		MaxResults:            aws.Int64(1),
+		NextToken:             aws.String("NextToken"),
+	}
+	resp, err := svc.DescribeAutomationExecutionParameters(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
+}
+
 func ExampleSSM_DescribeAutomationExecutions() {
 	svc := ssm.New(session.New())
 
@@ -644,6 +691,36 @@ func ExampleSSM_DescribeAutomationExecutions() {
 		NextToken:  aws.String("NextToken"),
 	}
 	resp, err := svc.DescribeAutomationExecutions(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
+}
+
+func ExampleSSM_DescribeAutomationStepExecutions() {
+	svc := ssm.New(session.New())
+
+	params := &ssm.DescribeAutomationStepExecutionsInput{
+		Filters: []*ssm.AutomationExecutionFilter{
+			{ // Required
+				Key: aws.String("AutomationExecutionFilterKey"), // Required
+				Values: []*string{ // Required
+					aws.String("AutomationExecutionFilterValue"), // Required
+					// More values...
+				},
+			},
+			// More values...
+		},
+		MaxResults: aws.Int64(1),
+		NextToken:  aws.String("NextToken"),
+	}
+	resp, err := svc.DescribeAutomationStepExecutions(params)
 
 	if err != nil {
 		// Print the error, cast err to awserr.Error to get the Code and
@@ -1529,6 +1606,7 @@ func ExampleSSM_GetDocument() {
 
 	params := &ssm.GetDocumentInput{
 		Name:            aws.String("DocumentARN"), // Required
+		DocumentFormat:  aws.String("DocumentFormat"),
 		DocumentVersion: aws.String("DocumentVersion"),
 	}
 	resp, err := svc.GetDocument(params)
@@ -1550,6 +1628,7 @@ func ExampleSSM_GetDocumentInternal() {
 	params := &ssm.GetDocumentInternalInput{
 		CustomerAccountId: aws.String("AccountId"),   // Required
 		Name:              aws.String("DocumentARN"), // Required
+		DocumentFormat:    aws.String("DocumentFormat"),
 		DocumentVersion:   aws.String("DocumentVersion"),
 		InstanceId:        aws.String("InstanceId"),
 	}
@@ -1621,6 +1700,7 @@ func ExampleSSM_GetInventorySchema() {
 		NextToken:    aws.String("NextToken"),
 		ResourceId:   aws.String("InventoryResourceId"),
 		ResourceType: aws.String("InventoryResourceType"),
+		SubType:      aws.Bool(true),
 		TypeName:     aws.String("InventoryItemTypeNameFilter"),
 	}
 	resp, err := svc.GetInventorySchema(params)
@@ -1893,6 +1973,27 @@ func ExampleSSM_GetPatchBaselineForPatchGroup() {
 	fmt.Println(resp)
 }
 
+func ExampleSSM_ListAssociationVersions() {
+	svc := ssm.New(session.New())
+
+	params := &ssm.ListAssociationVersionsInput{
+		AssociationId: aws.String("AssociationId"), // Required
+		MaxResults:    aws.Int64(1),
+		NextToken:     aws.String("NextToken"),
+	}
+	resp, err := svc.ListAssociationVersions(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
+}
+
 func ExampleSSM_ListAssociations() {
 	svc := ssm.New(session.New())
 
@@ -1986,7 +2087,7 @@ func ExampleSSM_ListComplianceItems() {
 		Filters: []*ssm.ComplianceStringFilter{
 			{ // Required
 				Key:  aws.String("ComplianceStringFilterKey"),
-				Type: aws.String("InventoryQueryOperatorType"),
+				Type: aws.String("ComplianceQueryOperatorType"),
 				Values: []*string{
 					aws.String("ComplianceFilterValue"), // Required
 					// More values...
@@ -2006,6 +2107,37 @@ func ExampleSSM_ListComplianceItems() {
 		},
 	}
 	resp, err := svc.ListComplianceItems(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
+}
+
+func ExampleSSM_ListComplianceSummaries() {
+	svc := ssm.New(session.New())
+
+	params := &ssm.ListComplianceSummariesInput{
+		Filters: []*ssm.ComplianceStringFilter{
+			{ // Required
+				Key:  aws.String("ComplianceStringFilterKey"),
+				Type: aws.String("ComplianceQueryOperatorType"),
+				Values: []*string{
+					aws.String("ComplianceFilterValue"), // Required
+					// More values...
+				},
+			},
+			// More values...
+		},
+		MaxResults: aws.Int64(1),
+		NextToken:  aws.String("NextToken"),
+	}
+	resp, err := svc.ListComplianceSummaries(params)
 
 	if err != nil {
 		// Print the error, cast err to awserr.Error to get the Code and
@@ -2127,7 +2259,7 @@ func ExampleSSM_ListResourceComplianceSummaries() {
 		Filters: []*ssm.ComplianceStringFilter{
 			{ // Required
 				Key:  aws.String("ComplianceStringFilterKey"),
-				Type: aws.String("InventoryQueryOperatorType"),
+				Type: aws.String("ComplianceQueryOperatorType"),
 				Values: []*string{
 					aws.String("ComplianceFilterValue"), // Required
 					// More values...
@@ -2219,13 +2351,13 @@ func ExampleSSM_ModifyDocumentPermission() {
 	fmt.Println(resp)
 }
 
-func ExampleSSM_PutComplianceItem() {
+func ExampleSSM_PutComplianceItems() {
 	svc := ssm.New(session.New())
 
-	params := &ssm.PutComplianceItemInput{
+	params := &ssm.PutComplianceItemsInput{
 		ComplianceType: aws.String("ComplianceTypeName"), // Required
 		ExecutionSummary: &ssm.ComplianceExecutionSummary{ // Required
-			ExecutionTime: aws.String("ComplianceExecutionTime"), // Required
+			ExecutionTime: aws.Time(time.Now()), // Required
 			ExecutionId:   aws.String("ComplianceExecutionId"),
 			ExecutionType: aws.String("ComplianceExecutionType"),
 		},
@@ -2246,7 +2378,7 @@ func ExampleSSM_PutComplianceItem() {
 		ResourceType:    aws.String("ComplianceResourceType"), // Required
 		ItemContentHash: aws.String("ComplianceItemContentHash"),
 	}
-	resp, err := svc.PutComplianceItem(params)
+	resp, err := svc.PutComplianceItems(params)
 
 	if err != nil {
 		// Print the error, cast err to awserr.Error to get the Code and
@@ -2263,15 +2395,17 @@ func ExampleSSM_PutConfigurePackageResult() {
 	svc := ssm.New(session.New())
 
 	params := &ssm.PutConfigurePackageResultInput{
+		Operation:      aws.String("Operation"),      // Required
 		OverallTiming:  aws.Int64(1),                 // Required
 		PackageName:    aws.String("PackageName"),    // Required
 		PackageVersion: aws.String("PackageVersion"), // Required
 		Result:         aws.Int64(1),                 // Required
-		PackageResultAttributes: map[string]*string{
+		Attributes: map[string]*string{
 			"Key": aws.String("Value"), // Required
 			// More values...
 		},
-		PackageResultSteps: []*ssm.PackageResultStep{
+		PreviousPackageVersion: aws.String("PackageVersion"),
+		Steps: []*ssm.ConfigurePackageResultStep{
 			{ // Required
 				Action: aws.String("Action"),
 				Result: aws.Int64(1),
@@ -2343,6 +2477,7 @@ func ExampleSSM_PutParameter() {
 		Description:    aws.String("ParameterDescription"),
 		KeyId:          aws.String("ParameterKeyId"),
 		Overwrite:      aws.Bool(true),
+		TimeToLive:     aws.Int64(1),
 	}
 	resp, err := svc.PutParameter(params)
 
@@ -2548,7 +2683,6 @@ func ExampleSSM_RegisterTaskWithMaintenanceWindow() {
 				},
 				OutputS3BucketName: aws.String("S3BucketName"),
 				OutputS3KeyPrefix:  aws.String("S3KeyPrefix"),
-				OutputS3Region:     aws.String("S3Region"),
 				Parameters: map[string][]*string{
 					"Key": { // Required
 						aws.String("ParameterValue"), // Required
@@ -2677,6 +2811,33 @@ func ExampleSSM_RequestManagedInstanceRoleToken() {
 	fmt.Println(resp)
 }
 
+func ExampleSSM_SendAutomationSignal() {
+	svc := ssm.New(session.New())
+
+	params := &ssm.SendAutomationSignalInput{
+		AutomationExecutionId: aws.String("AutomationExecutionId"), // Required
+		SignalType:            aws.String("SignalType"),            // Required
+		Payload: map[string][]*string{
+			"Key": { // Required
+				aws.String("AutomationParameterValue"), // Required
+				// More values...
+			},
+			// More values...
+		},
+	}
+	resp, err := svc.SendAutomationSignal(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
+
+	// Pretty-print the response data.
+	fmt.Println(resp)
+}
+
 func ExampleSSM_SendCommand() {
 	svc := ssm.New(session.New())
 
@@ -2764,6 +2925,7 @@ func ExampleSSM_StartAutomationExecution() {
 		DocumentName:    aws.String("DocumentARN"), // Required
 		ClientToken:     aws.String("IdempotencyToken"),
 		DocumentVersion: aws.String("DocumentVersion"),
+		Mode:            aws.String("ExecutionMode"),
 		Parameters: map[string][]*string{
 			"Key": { // Required
 				aws.String("AutomationParameterValue"), // Required
@@ -2809,6 +2971,7 @@ func ExampleSSM_UpdateAssociation() {
 
 	params := &ssm.UpdateAssociationInput{
 		AssociationId:      aws.String("AssociationId"), // Required
+		AssociationName:    aws.String("AssociationName"),
 		AssociationVersion: aws.String("AssociationVersion"),
 		DocumentVersion:    aws.String("DocumentVersion"),
 		Name:               aws.String("DocumentName"),
@@ -2883,6 +3046,7 @@ func ExampleSSM_UpdateDocument() {
 	params := &ssm.UpdateDocumentInput{
 		Content:         aws.String("DocumentContent"), // Required
 		Name:            aws.String("DocumentName"),    // Required
+		DocumentFormat:  aws.String("DocumentFormat"),
 		DocumentVersion: aws.String("DocumentVersion"),
 	}
 	resp, err := svc.UpdateDocument(params)
@@ -3097,7 +3261,6 @@ func ExampleSSM_UpdateMaintenanceWindowTask() {
 				},
 				OutputS3BucketName: aws.String("S3BucketName"),
 				OutputS3KeyPrefix:  aws.String("S3KeyPrefix"),
-				OutputS3Region:     aws.String("S3Region"),
 				Parameters: map[string][]*string{
 					"Key": { // Required
 						aws.String("ParameterValue"), // Required

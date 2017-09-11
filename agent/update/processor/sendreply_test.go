@@ -21,7 +21,7 @@ import (
 
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/log"
-	messageService "github.com/aws/amazon-ssm-agent/agent/message/service"
+	messageService "github.com/aws/amazon-ssm-agent/agent/runcommand/mds"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/service/ssmmds"
 	"github.com/stretchr/testify/assert"

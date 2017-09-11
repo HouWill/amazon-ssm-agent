@@ -65,6 +65,10 @@ const (
 	CustomInventoryRootDirName   = "custom"
 	InventoryContentHashFileName = "contentHash"
 
+	//aws-ssm-agent bookkeeping constants for compliance
+	ComplianceRootDirName         = "compliance"
+	ComplianceContentHashFileName = "contentHash"
+
 	// DefaultDocumentRootDirName is the root directory for storing command states
 	DefaultDocumentRootDirName = "document"
 
@@ -139,13 +143,22 @@ const (
 
 	AppConfigFileName    = "amazon-ssm-agent.json"
 	SeelogConfigFileName = "seelog.xml"
+
+	// Output truncation limits
+	MaxStdoutLength = 24000
+	MaxStderrLength = 8000
 )
 
 // Document versions that are supported by this Agent version.
 // Note that 1.1 and 2.1 are deprecated schemas and hence are not added here.
+// Version 2.0.1, 2.0.2, and 2.0.3 are added to support install documents for configurePackage
+// that require capabilities that did not exist before the build where support for these versions was added
 var SupportedDocumentVersions = map[string]struct{}{
-	"1.0": {},
-	"1.2": {},
-	"2.0": {},
-	"2.2": {},
+	"1.0":   {},
+	"1.2":   {},
+	"2.0":   {},
+	"2.0.1": {},
+	"2.0.2": {},
+	"2.0.3": {},
+	"2.2":   {},
 }

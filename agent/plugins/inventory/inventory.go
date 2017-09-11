@@ -19,17 +19,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
-	associateModel "github.com/aws/amazon-ssm-agent/agent/association/model"
-	"github.com/aws/amazon-ssm-agent/agent/association/schedulemanager"
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	docmanagerModel "github.com/aws/amazon-ssm-agent/agent/docmanager/model"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/datauploader"
@@ -37,6 +33,7 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers/application"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers/awscomponent"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers/custom"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers/file"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers/instancedetailedinformation"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers/network"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/inventory/gatherers/windowsUpdate"
@@ -60,29 +57,20 @@ const (
 	successfulMsgForInventoryPlugin           = "Inventory policy has been successfully applied and collected inventory data has been uploaded to SSM"
 )
 
-var (
-	//associationLock ensures that all read & write for lastExecutedAssociations & currentAssociations is thread-safe
-	associationLock sync.RWMutex
-)
-
 // PluginInput represents configuration which is applied to inventory plugin during execution.
 type PluginInput struct {
 	contracts.PluginInput
 	Applications                string
 	AWSComponents               string
 	NetworkConfig               string
+	Files                       string
 	WindowsUpdates              string
 	InstanceDetailedInformation string
 	CustomInventory             string
 	CustomInventoryDirectory    string
 }
 
-// decoupling schedulemanager.Schedules() for easy testability
-var associationsProvider = getCurrentAssociations
-
-func getCurrentAssociations() []*associateModel.InstanceAssociation {
-	return schedulemanager.Schedules()
-}
+var pluginPersister = pluginutil.PersistPluginInformationToCurrent
 
 // decoupling platform.InstanceID for easy testability
 var machineIDProvider = machineInfoProvider
@@ -108,13 +96,6 @@ type Plugin struct {
 	//uploader handles uploading inventory data to SSM.
 	uploader datauploader.T
 
-	//lastExecutedAssociations stores a map of associations & its execution time for inventory
-	lastExecutedAssociations map[string]string
-
-	// currentAssociations stores a copy of all current associations to instance. It's refreshed everytime inventory
-	// is invoked via association
-	currentAssociations map[string]string
-
 	// machineID of the machine where agent is running - useful during command detection
 	machineID string
 }
@@ -136,10 +117,6 @@ func NewPlugin(context context.T, pluginConfig pluginutil.PluginConfig) (*Plugin
 	p.StderrFileName = pluginConfig.StderrFileName
 	p.OutputTruncatedSuffix = pluginConfig.OutputTruncatedSuffix
 	p.ExecuteUploadOutputToS3Bucket = pluginutil.UploadOutputToS3BucketExecuter(p.UploadOutputToS3Bucket)
-
-	// since this is initialization - lastExecutedAssociations should be empty.
-	// NOTE: this will get populated when inventory plugin gets invoked via association later.
-	p.lastExecutedAssociations = make(map[string]string)
 
 	c := context.With("[" + Name() + "]")
 	log := c.Log()
@@ -305,6 +282,20 @@ func (p *Plugin) validatePredefinedGatherer(context context.T, collectionPolicy,
 	return
 }
 
+func (p *Plugin) validateGathererWithFilters(context context.T, collectionPolicy, gathererName string, filters string) (status bool, gatherer gatherers.T, policy model.Config, err error) {
+	if filters != "" {
+		if status, gatherer, err = p.CanGathererRun(context, gathererName); err != nil {
+			return
+		}
+
+		if status {
+			policy = model.Config{Collection: collectionPolicy, Filters: filters}
+		}
+	}
+
+	return
+}
+
 func (p *Plugin) validateCustomGatherer(context context.T, collectionPolicy, location string) (status bool, gatherer gatherers.T, policy model.Config, err error) {
 
 	if collectionPolicy == model.Enabled {
@@ -348,6 +339,12 @@ func (p *Plugin) ValidateInventoryInput(context context.T, input PluginInput) (c
 
 	//checking awscomponents gatherer
 	if canGathererRun, gatherer, cfg, err = p.validatePredefinedGatherer(context, input.AWSComponents, awscomponent.GathererName); err != nil {
+		return
+	} else if canGathererRun {
+		configuredGatherers[gatherer] = cfg
+	}
+
+	if canGathererRun, gatherer, cfg, err = p.validateGathererWithFilters(context, "", file.GathererName, input.Files); err != nil {
 		return
 	} else if canGathererRun {
 		configuredGatherers[gatherer] = cfg
@@ -399,15 +396,19 @@ func (p *Plugin) RunGatherers(gatherers map[gatherers.T]model.Config) (items []m
 	for gatherer, config := range gatherers {
 		name := gatherer.Name()
 		log.Infof("Invoking gatherer - %v", name)
+		start := time.Now()
 
 		if gItems, err = gatherer.Run(p.context, config); err != nil {
 			err = fmt.Errorf("Encountered error while executing %v. Error - %v", name, err.Error())
 			break
 
 		} else {
+			elapsed := time.Since(start)
+			log.Infof("execution time for gatherer - %v: %s", name, elapsed)
+
 			items = append(items, gItems...)
 
-			//TODO: Each gather shall check each item's size and stop collecting if size exceed immediately
+			//TODO: Each gatherer shall check each item's size and stop collecting if size exceed immediately
 			//TODO: only check the total item size at this function, whenever total size exceed, stop
 			//TODO: immediately and raise association error
 			//return error if collected data breaches size limit
@@ -433,10 +434,12 @@ func (p *Plugin) VerifyInventoryDataSize(item model.Item, items []model.Item) bo
 	itemB, _ := json.Marshal(item)
 	itemSize = float32(len(itemB))
 
+	log.Infof("Size (Bytes) of %v - %v", item.Name, itemSize)
 	log.Debugf("Size (Bytes) of %v - %v", item.Name, itemSize)
 
 	itemsSizeB, _ := json.Marshal(items)
 	itemsSize = float32(len(itemsSizeB))
+
 	log.Debugf("Total size (Bytes) of inventory items after including %v - %v", item.Name, itemsSize)
 
 	//Refer to https://wiki.ubuntu.com/UnitsPolicy regarding KiB to bytes conversion.
@@ -449,110 +452,22 @@ func (p *Plugin) VerifyInventoryDataSize(item model.Item, items []model.Item) bo
 	return true
 }
 
-// ConvertToCurrentAssociationsMap converts a list of current association to a map of association.
-func ConvertToCurrentAssociationsMap(input []*associateModel.InstanceAssociation) (currentAssociations map[string]string) {
-	currentAssociations = make(map[string]string)
-
-	for _, v := range input {
-		currentAssociations[*v.Association.AssociationId] = v.CreateDate.String()
-	}
-
-	return
-}
-
-// RefreshLastTrackedAssociationExecutions refreshes map of tracked association executions.
-func RefreshLastTrackedAssociationExecutions(oldTrackedExecutions, currentAssociations map[string]string) (newTrackedExecutions map[string]string) {
-	newTrackedExecutions = make(map[string]string)
-
-	//iterate over oldExecutions and see if any doc is not associated anymore - if so don't include that doc in the
-	//new map of tracked association execution
-
-	for doc := range oldTrackedExecutions {
-		if _, associationFound := currentAssociations[doc]; associationFound {
-			//the execution time of inventory remains the same so copy over that data
-			newTrackedExecutions[doc] = oldTrackedExecutions[doc]
-		}
-	}
-
-	return
-}
-
 // IsMulitpleAssociationPresent returns true if there are multiple associations for inventory plugin else it returns false.
-// It also refreshes map of tracked association executions accordingly.
-func (p *Plugin) IsMulitpleAssociationPresent(currentAssociationID string) (status bool, otherAssociationID string) {
-	var otherAssociationFound bool
+func (p *Plugin) IsMulitpleAssociationPresent(currentAssociationID string, config contracts.Configuration) (status bool, othersfound string) {
+	var currentInventoryAssociations []string
 
-	// we might end up changing value of p.lastAssociationId
-	associationLock.Lock()
-	defer associationLock.Unlock()
-
-	log := p.context.Log()
-	executionTime := time.Now().String()
-
-	log.Debugf("Detecting multiple association - when executing - %v at time - %v",
-		currentAssociationID, executionTime)
-
-	if len(p.lastExecutedAssociations) == 0 {
-		//lastExecutedAssociations is empty - which means this must be the first association run - return false
-		//but before returning - add the current association to the map with execution time.
-		p.lastExecutedAssociations[currentAssociationID] = executionTime
-		status = false
-
-		log.Debugf("There are 0 older association executions tracked - this is the first run - no multiple associations for inventory")
-	} else {
-		//There have been earlier associations so need to compare with current associations
-
-		//Get all current associations
-		p.currentAssociations = ConvertToCurrentAssociationsMap(associationsProvider())
-
-		log.Debugf("Map of all current associations - %v", p.currentAssociations)
-
-		for associationID := range p.currentAssociations {
-			if associationID == currentAssociationID {
-				//we are not interested in current association under whose context inventory plugin
-				//is currently executing
-				continue
-			}
-
-			if _, otherAssociationFound = p.lastExecutedAssociations[associationID]; otherAssociationFound {
-				//There exists a document which:
-				// - is not the current association
-				// - is currently associated with instance
-				// - has been previously executed by inventory plugin
-				//This is a multiple association scenario which is not supported by inventory plugin
-				status = true
-
-				//even though this execution run would fail we should still add this execution in the map
-				//of lastAssociationExecutions to fail executions of other associations
-				p.lastExecutedAssociations[currentAssociationID] = executionTime
-
-				//need to return the detected multiple association ID
-				otherAssociationID = associationID
-
-				//no need to check for any other associations from current associations - since we
-				//already found a multiple association
-				log.Debugf("Found another association - %v that executed inventory plugin at - %v",
-					associationID, p.lastExecutedAssociations[associationID])
-				break
-			}
-		}
-
-		if !otherAssociationFound {
-			//there wasn't any multiple association that was found -> return false
-			status = false
-
-			//we should add the current execution as well to the list of earlier tracked associations
-			p.lastExecutedAssociations[currentAssociationID] = executionTime
-
-			log.Debugf("Found no multiple associations for inventory plugin")
-		}
-
-		//refresh last tracked executions to ensure we delete old entries of association executions that aren't
-		//associated anymore.
-		p.lastExecutedAssociations = RefreshLastTrackedAssociationExecutions(p.lastExecutedAssociations, p.currentAssociations)
+	err := jsonutil.Remarshal(config.CurrentAssociations, &currentInventoryAssociations)
+	if err != nil {
+		p.context.Log().Errorf("failed to remarshal plugin settings: %v", err)
+		return false, ""
 	}
-
-	return
+	//test whether other associations are attached right now
+	for _, assocID := range currentInventoryAssociations {
+		if assocID != currentAssociationID {
+			return true, assocID
+		}
+	}
+	return false, ""
 }
 
 // IsInventoryBeingInvokedAsAssociation returns true if inventory plugin is invoked via ssm-associate or else it returns false.
@@ -598,7 +513,7 @@ func (p *Plugin) ParseAssociationIdFromFileName(input string) string {
 // Worker plugin implementation
 
 // Execute runs the inventory plugin
-func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag, subDocumentRunner runpluginutil.PluginRunner) (res contracts.PluginResult) {
+func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag) (res contracts.PluginResult) {
 	log := context.Log()
 	res.StartDateTime = time.Now()
 	defer func() { res.EndDateTime = time.Now() }()
@@ -627,7 +542,7 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 		return
 	}
 
-	//TODO: take care of cancel flag
+	//TODO: take care of cancel flag (SSM-INV-233)
 
 	associationID = p.ParseAssociationIdFromFileName(config.BookKeepingFileName)
 
@@ -661,7 +576,7 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 	// NOTE: as per contract with associate functionality - bookkeepingfilename will always contain associationId.
 	// bookkeepingfilename will be of format - associationID.RunID for associations, for command it will simply be commandID
 
-	if status, extraAssociationId := p.IsMulitpleAssociationPresent(associationID); status {
+	if status, extraAssociationId := p.IsMulitpleAssociationPresent(associationID, config); status {
 		errorMsg = fmt.Sprintf(errorMsgForMultipleAssociations,
 			pluginName,
 			associationID,

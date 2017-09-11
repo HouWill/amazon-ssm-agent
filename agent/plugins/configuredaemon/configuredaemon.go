@@ -23,7 +23,6 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
-	"github.com/aws/amazon-ssm-agent/agent/framework/runpluginutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/longrunning/manager"
 	managerContracts "github.com/aws/amazon-ssm-agent/agent/longrunning/plugin"
@@ -56,7 +55,7 @@ func NewPlugin(pluginConfig pluginutil.PluginConfig) (*Plugin, error) {
 
 // Execute runs multiple sets of commands and returns their outputs.
 // res.Output will contain a slice of RunCommandPluginOutput.
-func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag, subDocumentRunner runpluginutil.PluginRunner) (res contracts.PluginResult) {
+func (p *Plugin) Execute(context context.T, config contracts.Configuration, cancelFlag task.CancelFlag) (res contracts.PluginResult) {
 	log := context.Log()
 
 	var properties []interface{}
@@ -65,30 +64,24 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 		return res
 	}
 
-	out := make([]contracts.PluginOutput, len(properties))
-	for i, prop := range properties {
+	out := contracts.PluginOutput{}
+	for _, prop := range properties {
 
 		if cancelFlag.ShutDown() {
-			out[i].ExitCode = 1
-			out[i].Status = contracts.ResultStatusFailed
+			out.MarkAsShutdown()
 			break
 		} else if cancelFlag.Canceled() {
-			out[i].ExitCode = 1
-			out[i].Status = contracts.ResultStatusCancelled
+			out.MarkAsCancelled()
 			break
 		}
-		out[i] = runConfigureDaemon(p, context, prop, config.OrchestrationDirectory, config.DefaultWorkingDirectory, cancelFlag)
+		out.Merge(log, runConfigureDaemon(p, context, prop, config.OrchestrationDirectory, config.DefaultWorkingDirectory, cancelFlag))
 	}
 
-	// TODO: instance here we have to do more result processing, where individual sub properties results are merged smartly into plugin response.
-	// Currently assuming we have only one work.
-	if len(properties) > 0 {
-		res.Code = out[0].ExitCode
-		res.Status = out[0].Status
-		res.Output = out[0].String()
-		res.StandardOutput = pluginutil.StringPrefix(out[0].Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
-		res.StandardError = pluginutil.StringPrefix(out[0].Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
-	}
+	res.Code = out.ExitCode
+	res.Status = out.Status
+	res.Output = out.String()
+	res.StandardOutput = pluginutil.StringPrefix(out.Stdout, p.MaxStdoutLength, p.OutputTruncatedSuffix)
+	res.StandardError = pluginutil.StringPrefix(out.Stderr, p.MaxStderrLength, p.OutputTruncatedSuffix)
 
 	pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
 

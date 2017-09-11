@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aws/amazon-ssm-agent/agent/association/model"
+	complianceModel "github.com/aws/amazon-ssm-agent/agent/compliance/model"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/log"
@@ -64,6 +65,8 @@ func Refresh(log log.T, assocs []*model.InstanceAssociation) {
 			numberOfNewAssoc++
 		}
 	}
+
+	complianceModel.RefreshAssociationComplianceItems(associations)
 
 	log.Infof("Schedule manager refreshed with %v associations, %v new assocations associated", len(associations), numberOfNewAssoc)
 }
@@ -177,4 +180,13 @@ func Schedules() []*model.InstanceAssociation {
 	lock.RLock()
 	defer lock.RUnlock()
 	return associations
+}
+
+func AssociationExists(associationID string) bool {
+	for _, assoc := range associations {
+		if *assoc.Association.AssociationId == associationID {
+			return true
+		}
+	}
+	return false
 }
