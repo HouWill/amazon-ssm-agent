@@ -18,12 +18,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
 	"github.com/aws/amazon-ssm-agent/agent/log"
-	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/packageservice"
 )
 
 // NanoTime is helper interface for mocking time
@@ -39,8 +37,8 @@ func (t *TimeImpl) NowUnixNano() int64 {
 }
 
 type Trace struct {
-	tracer Tracer
-	logger log.T
+	Tracer Tracer
+	Logger log.T
 
 	Operation string
 	// results
@@ -63,7 +61,6 @@ type Tracer interface {
 	Traces() []*Trace
 	CurrentTrace() *Trace
 
-	ToPackageServiceTrace() []*packageservice.Trace
 	ToPluginOutput() *contracts.PluginOutput
 }
 
@@ -87,8 +84,8 @@ func (t *TracerImpl) BeginSection(message string) *Trace {
 	t.logger.Debugf("starting with %s", message)
 
 	trace := &Trace{
-		tracer:    t,
-		logger:    t.logger,
+		Tracer:    t,
+		Logger:    t.logger,
 		Operation: message,
 		Start:     t.timeProvider.NowUnixNano(),
 	}
@@ -178,75 +175,6 @@ func (t *TracerImpl) CurrentTrace() *Trace {
 	}
 }
 
-// ByTiming implements sort.Interface for []*packageservice.Trace based on the
-// Timing field.
-type ByTiming []*packageservice.Trace
-
-func (a ByTiming) Len() int           { return len(a) }
-func (a ByTiming) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByTiming) Less(i, j int) bool { return a[i].Timing < a[j].Timing }
-
-// ToPackageServiceTrace will return traces compatible with PackageService
-func (t *TracerImpl) ToPackageServiceTrace() []*packageservice.Trace {
-	traces := []*packageservice.Trace{}
-
-	for _, trace := range t.Traces() {
-		exitcode := trace.Exitcode
-		if exitcode == 0 && trace.Error != nil {
-			exitcode = 1
-		}
-
-		// single trace - no end time
-		if trace.Start != 0 && trace.Stop == 0 {
-			msg := fmt.Sprintf("= %s", trace.Operation)
-
-			if trace.Error != nil {
-				msg = fmt.Sprintf("%s (err `%s`)", msg, trace.Error.Error())
-			}
-
-			traces = append(traces,
-				&packageservice.Trace{
-					Operation: msg,
-					Exitcode:  exitcode,
-					Timing:    trace.Start,
-				},
-			)
-		}
-
-		// trace - start and end time - start block
-		if trace.Start != 0 && trace.Stop != 0 {
-			msg := fmt.Sprintf("> %s", trace.Operation)
-			traces = append(traces,
-				&packageservice.Trace{
-					Operation: msg,
-					Exitcode:  exitcode,
-					Timing:    trace.Start,
-				},
-			)
-		}
-
-		// trace - start and end time - end block
-		if trace.Start != 0 && trace.Stop != 0 {
-			msg := fmt.Sprintf("< %s", trace.Operation)
-
-			if trace.Error != nil {
-				msg = fmt.Sprintf("%s (err `%s`)", msg, trace.Error.Error())
-			}
-
-			traces = append(traces,
-				&packageservice.Trace{
-					Operation: msg,
-					Exitcode:  exitcode,
-					Timing:    trace.Stop,
-				},
-			)
-		}
-	}
-
-	sort.Sort(ByTiming(traces))
-	return traces
-}
-
 // ToPluginOutput will convert info and error output into a PluginOutput struct
 // It will sort the output by trace end time
 func (t *TracerImpl) ToPluginOutput() *contracts.PluginOutput {
@@ -257,6 +185,10 @@ func (t *TracerImpl) ToPluginOutput() *contracts.PluginOutput {
 	for _, trace := range t.Traces() {
 		infoOut.Write(trace.InfoOut.Bytes())
 		errorOut.Write(trace.ErrorOut.Bytes())
+		if trace.Error != nil {
+			errorOut.WriteString(trace.Error.Error())
+			errorOut.WriteString("\n")
+		}
 	}
 
 	out.Stdout = infoOut.String()
@@ -275,13 +207,14 @@ func (t *Trace) WithExitcode(exitcode int64) *Trace {
 
 // WithExitcode sets the error of the trace
 func (t *Trace) WithError(err error) *Trace {
+	t.Logger.Error(err)
 	t.Error = err
 	return t
 }
 
 // End will close the trace. Afterwards no other operation should be called.
 func (t *Trace) End() error {
-	return t.tracer.EndSection(t)
+	return t.Tracer.EndSection(t)
 }
 
 // EndWithError just combines two commonly used methods to be able to use it in
@@ -301,32 +234,35 @@ func (t *Trace) EndWithError(err *error) *Trace {
 // PluginOutput
 
 // AppendInfo adds info to PluginOutput StandardOut.
-func (t *Trace) AppendInfo(message string) {
-	t.logger.Info(message)
+func (t *Trace) AppendInfo(message string) *Trace {
+	t.Logger.Info(message)
 	t.InfoOut.WriteString(message)
 	t.InfoOut.WriteString("\n")
+	return t
 }
 
 // AppendInfof adds info to PluginOutput StandardOut with formatting parameters.
-func (t *Trace) AppendInfof(format string, params ...interface{}) {
-	t.AppendInfo(fmt.Sprintf(format, params...))
+func (t *Trace) AppendInfof(format string, params ...interface{}) *Trace {
+	return t.AppendInfo(fmt.Sprintf(format, params...))
 }
 
 // AppendError adds errors to PluginOutput StandardErr.
-func (t *Trace) AppendError(message string) {
-	t.logger.Error(message)
+func (t *Trace) AppendError(message string) *Trace {
+	t.Logger.Error(message)
 	t.ErrorOut.WriteString(message)
 	t.ErrorOut.WriteString("\n")
+	return t
 }
 
 // AppendErrorf adds errors to PluginOutput StandardErr with formatting parameters.
-func (t *Trace) AppendErrorf(format string, params ...interface{}) {
+func (t *Trace) AppendErrorf(format string, params ...interface{}) *Trace {
 	t.AppendError(fmt.Sprintf(format, params...))
+	return t
 }
 
 // subtraces
 
-func (t *Trace) AppendWithSubtraces(message string) {
+func (t *Trace) AppendWithSubtraces(message string) *Trace {
 	// TODO: detect subtraces
-	t.AppendInfo(message)
+	return t.AppendInfo(message)
 }

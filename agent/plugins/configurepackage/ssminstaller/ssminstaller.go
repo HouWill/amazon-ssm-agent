@@ -17,7 +17,6 @@ package ssminstaller
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,12 +24,12 @@ import (
 
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	"github.com/aws/amazon-ssm-agent/agent/docmanager/model"
 	"github.com/aws/amazon-ssm-agent/agent/docparser"
 	"github.com/aws/amazon-ssm-agent/agent/executers"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/trace"
 	"github.com/aws/amazon-ssm-agent/agent/times"
 )
 
@@ -74,16 +73,16 @@ func New(packageName string,
 	}
 }
 
-func (inst *Installer) Install(context context.T) *contracts.PluginOutput {
-	return inst.executeAction(context, "install")
+func (inst *Installer) Install(tracer trace.Tracer, context context.T) contracts.PluginOutputter {
+	return inst.executeAction(tracer, context, "install")
 }
 
-func (inst *Installer) Uninstall(context context.T) *contracts.PluginOutput {
-	return inst.executeAction(context, "uninstall")
+func (inst *Installer) Uninstall(tracer trace.Tracer, context context.T) contracts.PluginOutputter {
+	return inst.executeAction(tracer, context, "uninstall")
 }
 
-func (inst *Installer) Validate(context context.T) *contracts.PluginOutput {
-	return inst.executeAction(context, "validate")
+func (inst *Installer) Validate(tracer trace.Tracer, context context.T) contracts.PluginOutputter {
+	return inst.executeAction(tracer, context, "validate")
 }
 
 func (inst *Installer) Version() string {
@@ -94,17 +93,23 @@ func (inst *Installer) PackageName() string {
 	return inst.packageName
 }
 
-func (inst *Installer) executeAction(context context.T, actionName string) *contracts.PluginOutput {
-	log := context.Log()
-	output := &contracts.PluginOutput{Status: contracts.ResultStatusSuccess}
-	exists, pluginsInfo, _, err := inst.readAction(context, actionName)
+func (inst *Installer) executeAction(tracer trace.Tracer, context context.T, actionName string) contracts.PluginOutputter {
+	exectrace := tracer.BeginSection(fmt.Sprintf("execute action: %s", actionName))
+
+	output := &trace.PluginOutputTrace{Tracer: tracer}
+	output.SetStatus(contracts.ResultStatusSuccess)
+
+	exists, pluginsInfo, _, err := inst.readAction(tracer, context, actionName)
 	if exists {
 		if err != nil {
-			output.MarkAsFailed(log, err)
+			exectrace.WithError(err)
+			output.MarkAsFailed(nil, nil)
 		}
-		output.AppendInfof(log, "Initiating %v %v %v", inst.packageName, inst.version, actionName)
-		inst.executeDocument(context, actionName, pluginsInfo, output)
+		exectrace.AppendInfof("Initiating %v %v %v", inst.packageName, inst.version, actionName)
+		inst.executeDocument(tracer, context, actionName, pluginsInfo, output)
 	}
+
+	exectrace.End()
 	return output
 }
 
@@ -113,8 +118,8 @@ func (inst *Installer) getActionPath(actionName string, extension string) string
 	return filepath.Join(inst.packagePath, fmt.Sprintf("%v.%v", actionName, extension))
 }
 
-func (inst *Installer) readScriptAction(context context.T, action *Action, workingDir string, pluginName string, runCommand []interface{}) (pluginsInfo []model.PluginState, err error) {
-	pluginsInfo = []model.PluginState{}
+func (inst *Installer) readScriptAction(action *Action, workingDir string, pluginName string, runCommand []interface{}) (pluginsInfo []contracts.PluginState, err error) {
+	pluginsInfo = []contracts.PluginState{}
 
 	pluginFullName := fmt.Sprintf("aws:%v", pluginName)
 	var s3Prefix string
@@ -142,7 +147,7 @@ func (inst *Installer) readScriptAction(context context.T, action *Action, worki
 		DefaultWorkingDirectory: workingDir,
 	}
 
-	var plugin model.PluginState
+	var plugin contracts.PluginState
 	plugin.Configuration = config
 	plugin.Id = config.PluginID
 	plugin.Name = config.PluginName
@@ -152,7 +157,7 @@ func (inst *Installer) readScriptAction(context context.T, action *Action, worki
 }
 
 // readShAction turns an sh action into a set of SSM Document Plugins to execute
-func (inst *Installer) readShAction(context context.T, action *Action, workingDir string, envVars map[string]string) (pluginsInfo []model.PluginState, err error) {
+func (inst *Installer) readShAction(context context.T, action *Action, workingDir string, envVars map[string]string) (pluginsInfo []contracts.PluginState, err error) {
 	if action.actionType != ACTION_TYPE_SH {
 		return nil, fmt.Errorf("Internal error")
 	}
@@ -167,11 +172,11 @@ func (inst *Installer) readShAction(context context.T, action *Action, workingDi
 
 	runCommand = append(runCommand, fmt.Sprintf("sh %v.sh", action.actionName))
 
-	return inst.readScriptAction(context, action, workingDir, "runShellScript", runCommand)
+	return inst.readScriptAction(action, workingDir, "runShellScript", runCommand)
 }
 
 // readPs1Action turns an ps1 action into a set of SSM Document Plugins to execute
-func (inst *Installer) readPs1Action(context context.T, action *Action, workingDir string, envVars map[string]string) (pluginsInfo []model.PluginState, err error) {
+func (inst *Installer) readPs1Action(context context.T, action *Action, workingDir string, envVars map[string]string) (pluginsInfo []contracts.PluginState, err error) {
 	if action.actionType != ACTION_TYPE_PS1 {
 		return nil, fmt.Errorf("Internal error")
 	}
@@ -186,11 +191,11 @@ func (inst *Installer) readPs1Action(context context.T, action *Action, workingD
 
 	runCommand = append(runCommand, fmt.Sprintf(".\\%v.ps1; exit $LASTEXITCODE", action.actionName))
 
-	return inst.readScriptAction(context, action, workingDir, "runPowerShellScript", runCommand)
+	return inst.readScriptAction(action, workingDir, "runPowerShellScript", runCommand)
 }
 
 // readJsonAction turns an json action into a set of SSM Document Plugins to execute
-func (inst *Installer) readJsonAction(context context.T, action *Action, workingDir string) (pluginsInfo []model.PluginState, err error) {
+func (inst *Installer) readJsonAction(context context.T, action *Action, workingDir string) (pluginsInfo []contracts.PluginState, err error) {
 	if action.actionType != ACTION_TYPE_JSON {
 		return nil, fmt.Errorf("Internal error")
 	}
@@ -240,9 +245,7 @@ func (inst *Installer) readJsonAction(context context.T, action *Action, working
 	return pluginsInfo, nil
 }
 
-func (inst *Installer) resolveAction(context context.T, actionName string) (exists bool, action *Action, err error) {
-	log := context.Log()
-
+func (inst *Installer) resolveAction(tracer trace.Tracer, actionName string) (exists bool, action *Action, err error) {
 	actionPathSh := inst.getActionPath(actionName, "sh")
 	actionPathPs1 := inst.getActionPath(actionName, "ps1")
 	actionPathJson := inst.getActionPath(actionName, "json")
@@ -274,8 +277,9 @@ func (inst *Installer) resolveAction(context context.T, actionName string) (exis
 	}
 
 	if countExists > 1 {
-		log.Debugf("%v has more than one implementation (sh, ps1, json)")
-		return true, nil, fmt.Errorf("%v has more than one implementation (sh, ps1, json)", actionName)
+		err = fmt.Errorf("%v has more than one implementation (sh, ps1, json)", actionName)
+		tracer.CurrentTrace().WithError(err)
+		return true, nil, err
 	} else if countExists == 1 {
 		return true, actionTemp, nil
 	}
@@ -312,12 +316,12 @@ func (inst *Installer) getEnvVars(context context.T) (envVars map[string]string,
 
 // readAction returns a JSON document describing a management action and its working directory, or an empty string
 // if there is nothing to do for a given action
-func (inst *Installer) readAction(context context.T, actionName string) (exists bool, pluginsInfo []model.PluginState, workingDir string, err error) {
+func (inst *Installer) readAction(tracer trace.Tracer, context context.T, actionName string) (exists bool, pluginsInfo []contracts.PluginState, workingDir string, err error) {
 	// TODO: Split into linux and windows
 
 	var action *Action
 
-	if exists, action, err = inst.resolveAction(context, actionName); !exists || action == nil || err != nil {
+	if exists, action, err = inst.resolveAction(tracer, actionName); !exists || action == nil || err != nil {
 		return exists, nil, "", err
 	}
 
@@ -357,29 +361,35 @@ func (inst *Installer) readAction(context context.T, actionName string) (exists 
 }
 
 // executeDocument executes a command document as a sub-document of the current command and returns the result
-func (inst *Installer) executeDocument(context context.T,
+func (inst *Installer) executeDocument(
+	tracer trace.Tracer,
+	context context.T,
 	actionName string,
-	pluginsInfo []model.PluginState,
-	output *contracts.PluginOutput) {
-	log := context.Log()
+	pluginsInfo []contracts.PluginState,
+	output contracts.PluginOutputter) {
+
+	exectrace := tracer.CurrentTrace()
 
 	pluginOutputs := inst.execdep.ExecuteDocument(context, pluginsInfo, inst.config.BookKeepingFileName, times.ToIso8601UTC(time.Now()))
 	if pluginOutputs == nil {
-		output.MarkAsFailed(log, errors.New("No output from executing install document (install.json)"))
-	}
-	for _, pluginOut := range pluginOutputs {
-		log.Debugf("Plugin %v ResultStatus %v", pluginOut.PluginName, pluginOut.Status)
-		if pluginOut.StandardOutput != "" {
-			output.AppendInfof(log, "%v output: %v", actionName, pluginOut.StandardOutput)
-		}
-		if pluginOut.StandardError != "" {
-			output.AppendErrorf(log, "%v errors: %v", actionName, pluginOut.StandardError)
-		}
-		if pluginOut.Error != nil {
-			output.MarkAsFailed(log, pluginOut.Error)
-		}
-		output.Status = contracts.MergeResultStatus(output.Status, pluginOut.Status)
+		exectrace.WithError(fmt.Errorf("No output from executing %s document", actionName))
+		output.MarkAsFailed(nil, nil)
+		return
 	}
 
-	return
+	for _, pluginOut := range pluginOutputs {
+		exectrace.WithExitcode(int64(pluginOut.Code))
+		exectrace.AppendInfof("Plugin %v ResultStatus %v", pluginOut.PluginName, pluginOut.Status)
+		if pluginOut.StandardOutput != "" {
+			exectrace.AppendInfof("%v output: %v", actionName, pluginOut.StandardOutput)
+		}
+		if pluginOut.StandardError != "" {
+			exectrace.AppendErrorf("%v errors: %v", actionName, pluginOut.StandardError)
+		}
+		if pluginOut.Error != nil {
+			exectrace.WithError(pluginOut.Error)
+			output.MarkAsFailed(nil, nil)
+		}
+		output.SetStatus(contracts.MergeResultStatus(output.GetStatus(), pluginOut.Status))
+	}
 }

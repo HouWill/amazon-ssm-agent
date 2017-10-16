@@ -24,15 +24,24 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect/ec2infradetect"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect/osdetect"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/packageservice"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/trace"
 	"github.com/aws/aws-sdk-go/service/ssm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
-var loggerMock = log.NewMockLog()
 var platformName = "testplatform"
 var platformVersion = "testversion"
 var architecture = "testarch"
+
+type TimeMock struct {
+	mock.Mock
+}
+
+func (t *TimeMock) NowUnixNano() int64 {
+	args := t.Called()
+	return int64(args.Int(0))
+}
 
 type pkgtree map[string]map[string]map[string]*PackageInfo
 type pkgselector struct {
@@ -63,6 +72,9 @@ func manifestPackageGen(sel *[]pkgselector) pkgtree {
 }
 
 func TestExtractPackageInfo(t *testing.T) {
+	tracer := trace.NewTracer(log.NewMockLog())
+	tracer.BeginSection("test segment root")
+
 	data := []struct {
 		name        string
 		manifest    *Manifest
@@ -199,7 +211,7 @@ func TestExtractPackageInfo(t *testing.T) {
 
 			ds := &PackageService{facadeClient: &facadeClientMock, manifestCache: packageservice.ManifestCacheMemNew(), collector: &mockedCollector}
 
-			result, err := ds.extractPackageInfo(loggerMock, testdata.manifest)
+			result, err := ds.extractPackageInfo(tracer, testdata.manifest)
 			if testdata.expectedErr {
 				assert.Error(t, err)
 			} else {
@@ -211,6 +223,12 @@ func TestExtractPackageInfo(t *testing.T) {
 }
 
 func TestReportResult(t *testing.T) {
+	now := 420000
+	timemock := &TimeMock{}
+	timemock.On("NowUnixNano").Return(now)
+
+	tracer := trace.NewTracer(log.NewMockLog())
+	tracer.BeginSection("test segment root")
 
 	data := []struct {
 		name          string
@@ -269,9 +287,9 @@ func TestReportResult(t *testing.T) {
 				&osdetect.OperatingSystem{"abc", "567", "", "xyz", "", ""},
 				&ec2infradetect.Ec2Infrastructure{"instanceIDX", "Reg1", "", "AZ1", "instanceTypeZ"},
 			}, nil).Once()
-			ds := &PackageService{facadeClient: &testdata.facadeClient, manifestCache: packageservice.ManifestCacheMemNew(), collector: &mockedCollector}
+			ds := &PackageService{facadeClient: &testdata.facadeClient, manifestCache: packageservice.ManifestCacheMemNew(), collector: &mockedCollector, timeProvider: timemock}
 
-			err := ds.ReportResult(loggerMock, testdata.packageResult)
+			err := ds.ReportResult(tracer, testdata.packageResult)
 			if testdata.expectedErr {
 				assert.Error(t, err)
 			} else {
@@ -284,7 +302,7 @@ func TestReportResult(t *testing.T) {
 				} else {
 					assert.EqualValues(t, &testdata.packageResult.PreviousPackageVersion, testdata.facadeClient.putConfigurePackageResultInput.PreviousPackageVersion)
 				}
-				assert.Equal(t, testdata.packageResult.Timing, *testdata.facadeClient.putConfigurePackageResultInput.OverallTiming)
+				assert.Equal(t, (int64(now)-testdata.packageResult.Timing)/1000000, *testdata.facadeClient.putConfigurePackageResultInput.OverallTiming)
 				assert.Equal(t, testdata.packageResult.Exitcode, *testdata.facadeClient.putConfigurePackageResultInput.Result)
 				assert.Equal(t, "abc", *testdata.facadeClient.putConfigurePackageResultInput.Attributes["platformName"])
 				assert.Equal(t, "567", *testdata.facadeClient.putConfigurePackageResultInput.Attributes["platformVersion"])
@@ -301,6 +319,7 @@ func TestReportResult(t *testing.T) {
 func TestDownloadManifest(t *testing.T) {
 	manifestStrErr := "xkj]{}["
 	manifestStr := "{\"version\": \"1234\"}"
+	tracer := trace.NewTracer(log.NewMockLog())
 
 	data := []struct {
 		name           string
@@ -364,7 +383,7 @@ func TestDownloadManifest(t *testing.T) {
 			mockedCollector.On("CollectData", mock.Anything).Return(envdata, nil).Once()
 			ds := &PackageService{facadeClient: &testdata.facadeClient, manifestCache: packageservice.ManifestCacheMemNew(), collector: &mockedCollector}
 
-			result, err := ds.DownloadManifest(loggerMock, testdata.packageName, testdata.packageVersion)
+			result, err := ds.DownloadManifest(tracer, testdata.packageName, testdata.packageVersion)
 
 			if testdata.expectedErr {
 				assert.Error(t, err)
@@ -381,6 +400,9 @@ func TestDownloadManifest(t *testing.T) {
 }
 
 func TestFindFileFromManifest(t *testing.T) {
+	tracer := trace.NewTracer(log.NewMockLog())
+	tracer.BeginSection("test segment root")
+
 	data := []struct {
 		name        string
 		manifest    *Manifest
@@ -447,7 +469,7 @@ func TestFindFileFromManifest(t *testing.T) {
 			}
 			ds := &PackageService{facadeClient: &facadeClientMock, manifestCache: packageservice.ManifestCacheMemNew(), collector: &mockedCollector}
 
-			result, err := ds.findFileFromManifest(loggerMock, testdata.manifest)
+			result, err := ds.findFileFromManifest(tracer, testdata.manifest)
 
 			if testdata.expectedErr {
 				assert.Error(t, err)
@@ -460,6 +482,9 @@ func TestFindFileFromManifest(t *testing.T) {
 }
 
 func TestDownloadFile(t *testing.T) {
+	tracer := trace.NewTracer(log.NewMockLog())
+	tracer.BeginSection("test segment root")
+
 	data := []struct {
 		name        string
 		network     networkMock
@@ -514,7 +539,7 @@ func TestDownloadFile(t *testing.T) {
 		t.Run(testdata.name, func(t *testing.T) {
 			networkdep = &testdata.network
 
-			result, err := downloadFile(loggerMock, testdata.file)
+			result, err := downloadFile(tracer, testdata.file)
 			if testdata.expectedErr {
 				assert.Error(t, err)
 			} else {
@@ -550,6 +575,8 @@ func TestDownloadArtifact(t *testing.T) {
 		}
 	}
 	`
+	tracer := trace.NewTracer(log.NewMockLog())
+	tracer.BeginSection("test segment root")
 
 	data := []struct {
 		name           string
@@ -593,7 +620,7 @@ func TestDownloadArtifact(t *testing.T) {
 			ds := &PackageService{manifestCache: cache, collector: &mockedCollector}
 			networkdep = &testdata.network
 
-			result, err := ds.DownloadArtifact(loggerMock, testdata.packageName, testdata.packageVersion)
+			result, err := ds.DownloadArtifact(tracer, testdata.packageName, testdata.packageVersion)
 
 			if testdata.expectedErr {
 				assert.Error(t, err)

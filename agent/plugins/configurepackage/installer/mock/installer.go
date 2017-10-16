@@ -18,6 +18,7 @@ package installer_mock
 import (
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/trace"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -25,19 +26,19 @@ type Mock struct {
 	mock.Mock
 }
 
-func (inst *Mock) Install(context context.T) *contracts.PluginOutput {
+func (inst *Mock) Install(tracer trace.Tracer, context context.T) contracts.PluginOutputter {
 	args := inst.Called(context)
-	return args.Get(0).(*contracts.PluginOutput)
+	return args.Get(0).(contracts.PluginOutputter)
 }
 
-func (inst *Mock) Uninstall(context context.T) *contracts.PluginOutput {
+func (inst *Mock) Uninstall(tracer trace.Tracer, context context.T) contracts.PluginOutputter {
 	args := inst.Called(context)
-	return args.Get(0).(*contracts.PluginOutput)
+	return args.Get(0).(contracts.PluginOutputter)
 }
 
-func (inst *Mock) Validate(context context.T) *contracts.PluginOutput {
+func (inst *Mock) Validate(tracer trace.Tracer, context context.T) contracts.PluginOutputter {
 	args := inst.Called(context)
-	return args.Get(0).(*contracts.PluginOutput)
+	return args.Get(0).(contracts.PluginOutputter)
 }
 
 func (inst *Mock) Version() string {

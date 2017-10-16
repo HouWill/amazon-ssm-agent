@@ -20,7 +20,7 @@ import (
 	"os"
 	"os/user"
 
-	"github.com/aws/amazon-ssm-agent/agent/log"
+	alt_user "github.com/aws/amazon-ssm-agent/agent/user"
 )
 
 func getPlatformSpecificHomeLocation() string {
@@ -31,17 +31,24 @@ func getPlatformSpecificHomeLocation() string {
 	//
 	// Platform specific directories
 	// Linux/OSX: "$HOME/.aws/credentials"
-	homeDir := os.Getenv("HOME")
 
+	// 1. get it from $HOME
+	homeDir := os.Getenv("HOME")
 	if homeDir != "" {
 		return homeDir
 	}
 
+	// 2. use cgo
 	usr, err := user.Current()
-	if err != nil {
-		log.Logger().Errorf("Current user not found. %v", err)
-		return homeDir
+	if err == nil && usr.HomeDir != "" {
+		return usr.HomeDir
 	}
 
-	return usr.HomeDir
+	// 3. use own implementation
+	usr, err = alt_user.Current()
+	if err == nil && usr.HomeDir != "" {
+		return usr.HomeDir
+	}
+
+	return ""
 }

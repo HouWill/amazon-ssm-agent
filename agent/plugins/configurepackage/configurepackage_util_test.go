@@ -27,6 +27,7 @@ import (
 	repoMock "github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/localpackages/mock"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/packageservice"
 	serviceMock "github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/packageservice/mock"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/trace"
 	"github.com/aws/amazon-ssm-agent/agent/task"
 	"github.com/stretchr/testify/mock"
 )
@@ -62,10 +63,18 @@ func repoUninstallMock(pluginInformation *ConfigurePackagePluginInput, installer
 	return &mockRepo
 }
 
+func pluginOutputWithStatus(status contracts.ResultStatus) contracts.PluginOutputter {
+	tracer := trace.NewTracer(log.NewMockLog())
+	tracer.BeginSection("test segment root")
+	output := &trace.PluginOutputTrace{Tracer: tracer}
+	output.SetStatus(status)
+	return output
+}
+
 func installerSuccessMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Install", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
-	mockInst.On("Validate", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
+	mockInst.On("Install", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
+	mockInst.On("Validate", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -73,7 +82,7 @@ func installerSuccessMock(packageName string, version string) *installerMock.Moc
 
 func installerRebootMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Install", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccessAndReboot}).Once()
+	mockInst.On("Install", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccessAndReboot)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -81,7 +90,7 @@ func installerRebootMock(packageName string, version string) *installerMock.Mock
 
 func installerFailedMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Install", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusFailed}).Once()
+	mockInst.On("Install", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusFailed)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -89,8 +98,8 @@ func installerFailedMock(packageName string, version string) *installerMock.Mock
 
 func installerInvalidMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Install", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
-	mockInst.On("Validate", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusFailed}).Once()
+	mockInst.On("Install", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
+	mockInst.On("Validate", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusFailed)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -98,7 +107,7 @@ func installerInvalidMock(packageName string, version string) *installerMock.Moc
 
 func uninstallerSuccessMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Uninstall", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
+	mockInst.On("Uninstall", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -106,7 +115,7 @@ func uninstallerSuccessMock(packageName string, version string) *installerMock.M
 
 func uninstallerRebootMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Uninstall", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccessAndReboot}).Once()
+	mockInst.On("Uninstall", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccessAndReboot)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -114,7 +123,7 @@ func uninstallerRebootMock(packageName string, version string) *installerMock.Mo
 
 func uninstallerFailedMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Uninstall", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusFailed}).Once()
+	mockInst.On("Uninstall", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusFailed)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -122,8 +131,8 @@ func uninstallerFailedMock(packageName string, version string) *installerMock.Mo
 
 func installerFailedWithRollbackMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Install", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusFailed}).Once()
-	mockInst.On("Uninstall", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
+	mockInst.On("Install", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusFailed)).Once()
+	mockInst.On("Uninstall", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -131,9 +140,9 @@ func installerFailedWithRollbackMock(packageName string, version string) *instal
 
 func uninstallerSuccessWithRollbackMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Uninstall", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
-	mockInst.On("Install", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
-	mockInst.On("Validate", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
+	mockInst.On("Uninstall", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
+	mockInst.On("Install", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
+	mockInst.On("Validate", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -141,8 +150,8 @@ func uninstallerSuccessWithRollbackMock(packageName string, version string) *ins
 
 func uninstallerSuccessWithFailedRollbackMock(packageName string, version string) *installerMock.Mock {
 	mockInst := installerMock.Mock{}
-	mockInst.On("Uninstall", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusSuccess}).Once()
-	mockInst.On("Install", mock.Anything).Return(&contracts.PluginOutput{Status: contracts.ResultStatusFailed}).Once()
+	mockInst.On("Uninstall", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusSuccess)).Once()
+	mockInst.On("Install", mock.Anything).Return(pluginOutputWithStatus(contracts.ResultStatusFailed)).Once()
 	mockInst.On("PackageName").Return(packageName)
 	mockInst.On("Version").Return(version)
 	return &mockInst
@@ -159,8 +168,8 @@ func installerNotCalledMock() *installerMock.Mock {
 	return &installerMock.Mock{}
 }
 
-func selectMockService(service packageservice.PackageService) func(log log.T, repository string, localrepo localpackages.Repository) packageservice.PackageService {
-	return func(log log.T, repository string, localrepo localpackages.Repository) packageservice.PackageService {
+func selectMockService(service packageservice.PackageService) func(tracer trace.Tracer, repository string, localrepo localpackages.Repository) packageservice.PackageService {
+	return func(tracer trace.Tracer, repository string, localrepo localpackages.Repository) packageservice.PackageService {
 		return service
 	}
 }
@@ -191,9 +200,6 @@ func createMockCancelFlag() task.CancelFlag {
 	mockCancelFlag.On("Wait").Return(false).After(100 * time.Millisecond)
 
 	return mockCancelFlag
-}
-
-func mockPersistPluginInfo(log log.T, pluginID string, config contracts.Configuration, res contracts.PluginResult) {
 }
 
 type ConfigurePackageStubs struct {

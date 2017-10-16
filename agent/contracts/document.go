@@ -12,9 +12,11 @@
 // permissions and limitations under the License.
 
 // Package model provides model definitions for document state
-package model
+package contracts
 
-import "github.com/aws/amazon-ssm-agent/agent/contracts"
+import (
+	"time"
+)
 
 // DocumentType defines the type of document persists locally.
 type DocumentType string
@@ -36,10 +38,16 @@ const (
 // This has both the configuration with which a plugin gets executed and a
 // corresponding plugin result.
 type PluginState struct {
-	Configuration contracts.Configuration
+	Configuration Configuration
 	Name          string
-	Result        contracts.PluginResult
-	Id            string
+	//TODO truncate this struct
+	Result PluginResult
+	Id     string
+}
+
+type OSProcInfo struct {
+	Pid       int
+	StartTime time.Time
 }
 
 // DocumentInfo represents information stored as interim state for a document
@@ -56,8 +64,9 @@ type DocumentInfo struct {
 	CreatedDate     string
 	DocumentName    string
 	DocumentVersion string
-	DocumentStatus  contracts.ResultStatus
+	DocumentStatus  ResultStatus
 	RunCount        int
+	ProcInfo        OSProcInfo
 }
 
 // DocumentState represents information relevant to a command that gets executed by agent
@@ -71,7 +80,7 @@ type DocumentState struct {
 
 // IsRebootRequired returns if reboot is needed
 func (c *DocumentState) IsRebootRequired() bool {
-	return c.DocumentInformation.DocumentStatus == contracts.ResultStatusSuccessAndReboot
+	return c.DocumentInformation.DocumentStatus == ResultStatusSuccessAndReboot
 }
 
 // IsAssociation returns if documentType is association
@@ -86,4 +95,16 @@ type CancelCommandInfo struct {
 	CancelCommandID string
 	Payload         string
 	DebugInfo       string
+}
+
+func UpdateDocState(docResult *DocumentResult, docState *DocumentState) {
+	docState.DocumentInformation.DocumentStatus = docResult.Status
+	pluginID := docResult.LastPlugin
+	if pluginID != "" {
+		for i := 0; i < len(docState.InstancePluginsInformation); i++ {
+			if docState.InstancePluginsInformation[i].Id == docResult.LastPlugin {
+				docState.InstancePluginsInformation[i].Result = *docResult.PluginResults[pluginID]
+			}
+		}
+	}
 }

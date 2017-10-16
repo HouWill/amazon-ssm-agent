@@ -24,7 +24,6 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	docmanagerModel "github.com/aws/amazon-ssm-agent/agent/docmanager/model"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
 	"github.com/aws/amazon-ssm-agent/agent/jsonutil"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
@@ -69,8 +68,6 @@ type PluginInput struct {
 	CustomInventory             string
 	CustomInventoryDirectory    string
 }
-
-var pluginPersister = pluginutil.PersistPluginInformationToCurrent
 
 // decoupling platform.InstanceID for easy testability
 var machineIDProvider = machineInfoProvider
@@ -474,7 +471,7 @@ func (p *Plugin) IsMulitpleAssociationPresent(currentAssociationID string, confi
 // It throws error if the detection itself fails
 func (p *Plugin) IsInventoryBeingInvokedAsAssociation(fileName string) (status bool, err error) {
 	var content string
-	var docState docmanagerModel.DocumentState
+	var docState contracts.DocumentState
 	log := p.context.Log()
 
 	//since the document is still getting executed - it must be in Current folder
@@ -563,7 +560,6 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 
 		res = setPluginResult(inventoryOutput, res)
 		p.uploadOutputToS3(context, config.PluginID, orchestrationDir, config.OutputS3BucketName, config.OutputS3KeyPrefix, res.StandardOutput, res.StandardError)
-		pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
 
 		return
 	}
@@ -591,7 +587,6 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 
 		res = setPluginResult(inventoryOutput, res)
 		p.uploadOutputToS3(context, config.PluginID, orchestrationDir, config.OutputS3BucketName, config.OutputS3KeyPrefix, res.StandardOutput, res.StandardError)
-		pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
 
 		return
 	}
@@ -607,7 +602,6 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 
 		res = setPluginResult(inventoryOutput, res)
 		p.uploadOutputToS3(context, config.PluginID, orchestrationDir, config.OutputS3BucketName, config.OutputS3KeyPrefix, res.StandardOutput, res.StandardError)
-		pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
 
 		return
 	}
@@ -622,8 +616,6 @@ func (p *Plugin) Execute(context context.T, config contracts.Configuration, canc
 
 		res = setPluginResult(inventoryOutput, res)
 		p.uploadOutputToS3(context, config.PluginID, orchestrationDir, config.OutputS3BucketName, config.OutputS3KeyPrefix, res.StandardOutput, res.StandardError)
-
-		pluginutil.PersistPluginInformationToCurrent(log, config.PluginID, config, res)
 
 		return
 	}

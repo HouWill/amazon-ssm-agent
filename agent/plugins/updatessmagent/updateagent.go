@@ -380,14 +380,20 @@ func (m *updateManager) validateUpdate(log log.T,
 		return true, err
 	}
 
-	if pluginInput.TargetVersion == currentVersion {
+	res, err := updateutil.CompareVersion(pluginInput.TargetVersion, currentVersion)
+	if err != nil {
+		return true, err
+	}
+
+	if res == 0 {
 		out.AppendInfof(log, "%v %v has already been installed, update skipped",
 			pluginInput.AgentName,
 			currentVersion)
 		out.MarkAsSucceeded()
 		return true, nil
 	}
-	if pluginInput.TargetVersion < currentVersion && !allowDowngrade {
+
+	if res == -1 && !allowDowngrade {
 		return true,
 			fmt.Errorf(
 				"updating %v to an older version, please enable allow downgrade to proceed",
@@ -475,7 +481,7 @@ func GetUpdatePluginConfig(context context.T) UpdatePluginConfig {
 	}
 
 	var manifestUrl string
-	if region == s3util.RegionBJS {
+	if strings.HasPrefix(region, s3util.ChinaRegionPrefix) {
 		manifestUrl = ChinaManifestURL
 	} else {
 		manifestUrl = CommonManifestURL

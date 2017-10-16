@@ -26,11 +26,10 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/context"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	"github.com/aws/amazon-ssm-agent/agent/docmanager"
-	"github.com/aws/amazon-ssm-agent/agent/docmanager/model"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
+	"github.com/aws/amazon-ssm-agent/agent/framework/docmanager"
 	"github.com/aws/amazon-ssm-agent/agent/framework/processor/executer"
-	"github.com/aws/amazon-ssm-agent/agent/framework/processor/executer/basicexecuter"
+	"github.com/aws/amazon-ssm-agent/agent/framework/processor/executer/outofproc"
 	"github.com/aws/amazon-ssm-agent/agent/longrunning/manager"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
 	"github.com/aws/amazon-ssm-agent/agent/rebooter"
@@ -52,9 +51,9 @@ type Processor interface {
 	//Stop the processor, save the current state to resume later
 	Stop(stopType contracts.StopType)
 	//submit to the pool a document in form of docState object, results will be streamed back from the central channel returned by Start()
-	Submit(docState model.DocumentState)
+	Submit(docState contracts.DocumentState)
 	//cancel process the cancel document, with no return value since the command is already tracked in a different thread
-	Cancel(docState model.DocumentState)
+	Cancel(docState contracts.DocumentState)
 	//TODO do we need to implement CancelAll?
 	//CancelAll()
 }
@@ -65,13 +64,14 @@ type EngineProcessor struct {
 	sendCommandPool   task.Pool
 	cancelCommandPool task.Pool
 	//TODO this should be abstract as the Processor's domain
-	supportedDocTypes []model.DocumentType
+	supportedDocTypes []contracts.DocumentType
 	resChan           chan contracts.DocumentResult
+	documentMgr       docmanager.DocumentMgr
 }
 
 //TODO worker pool should be triggered in the Start() function
 //supported document types indicate the domain of the documentes the Processor with run upon. There'll be race-conditions if there're multiple Processors in a certain domain.
-func NewEngineProcessor(ctx context.T, commandWorkerLimit int, cancelWorkerLimit int, supportedDocs []model.DocumentType) *EngineProcessor {
+func NewEngineProcessor(ctx context.T, commandWorkerLimit int, cancelWorkerLimit int, supportedDocs []contracts.DocumentType) *EngineProcessor {
 	log := ctx.Log()
 	// sendCommand and cancelCommand will be processed by separate worker pools
 	// so we can define the number of workers per each
@@ -81,8 +81,9 @@ func NewEngineProcessor(ctx context.T, commandWorkerLimit int, cancelWorkerLimit
 	cancelCommandTaskPool := task.NewPool(log, cancelWorkerLimit, cancelWaitDuration, clock)
 	resChan := make(chan contracts.DocumentResult)
 	executerCreator := func(ctx context.T) executer.Executer {
-		return basicexecuter.NewBasicExecuter(ctx)
+		return outofproc.NewOutOfProcExecuter(ctx)
 	}
+	documentMgr := docmanager.NewDocumentFileMgr(appconfig.DefaultDataStorePath, appconfig.DefaultDocumentRootDirName, appconfig.DefaultLocationOfState)
 	return &EngineProcessor{
 		context:           ctx.With("[EngineProcessor]"),
 		executerCreator:   executerCreator,
@@ -90,6 +91,7 @@ func NewEngineProcessor(ctx context.T, commandWorkerLimit int, cancelWorkerLimit
 		cancelCommandPool: cancelCommandTaskPool,
 		supportedDocTypes: supportedDocs,
 		resChan:           resChan,
+		documentMgr:       documentMgr,
 	}
 }
 
@@ -114,21 +116,21 @@ func (p *EngineProcessor) Start() (resChan chan contracts.DocumentResult, err er
 }
 
 //Submit() is the public interface for sending run document request to processor
-func (p *EngineProcessor) Submit(docState model.DocumentState) {
+func (p *EngineProcessor) Submit(docState contracts.DocumentState) {
 	log := p.context.Log()
 	//queue up the pending document
-	docmanager.PersistData(log, docState.DocumentInformation.DocumentID, docState.DocumentInformation.InstanceID, appconfig.DefaultLocationOfPending, docState)
+	p.documentMgr.PersistDocumentState(log, docState.DocumentInformation.DocumentID, docState.DocumentInformation.InstanceID, appconfig.DefaultLocationOfPending, docState)
 	err := p.submit(&docState)
 	if err != nil {
 		log.Error("Document Submission failed", err)
 		//move the fail-to-submit document to corrupt folder
-		docmanager.MoveDocumentState(log, docState.DocumentInformation.DocumentID, docState.DocumentInformation.InstanceID, appconfig.DefaultLocationOfPending, appconfig.DefaultLocationOfCorrupt)
+		p.documentMgr.MoveDocumentState(log, docState.DocumentInformation.DocumentID, docState.DocumentInformation.InstanceID, appconfig.DefaultLocationOfPending, appconfig.DefaultLocationOfCorrupt)
 		return
 	}
 	return
 }
 
-func (p *EngineProcessor) submit(docState *model.DocumentState) error {
+func (p *EngineProcessor) submit(docState *contracts.DocumentState) error {
 	log := p.context.Log()
 	//TODO this is a hack, in future jobID should be managed by Processing engine itself, instead of inferring from job's internal field
 	var jobID string
@@ -143,12 +145,13 @@ func (p *EngineProcessor) submit(docState *model.DocumentState) error {
 			p.executerCreator,
 			cancelFlag,
 			p.resChan,
-			docState)
+			docState,
+			p.documentMgr)
 	})
 
 }
 
-func (p *EngineProcessor) Cancel(docState model.DocumentState) {
+func (p *EngineProcessor) Cancel(docState contracts.DocumentState) {
 	log := p.context.Log()
 	//TODO this is a hack, in future jobID should be managed by Processing engine itself, instead of inferring from job's internal field
 	var jobID string
@@ -158,9 +161,9 @@ func (p *EngineProcessor) Cancel(docState model.DocumentState) {
 		jobID = docState.DocumentInformation.MessageID
 	}
 	//queue up the pending document
-	docmanager.PersistData(log, docState.DocumentInformation.DocumentID, docState.DocumentInformation.InstanceID, appconfig.DefaultLocationOfPending, docState)
+	p.documentMgr.PersistDocumentState(log, docState.DocumentInformation.DocumentID, docState.DocumentInformation.InstanceID, appconfig.DefaultLocationOfPending, docState)
 	err := p.cancelCommandPool.Submit(log, jobID, func(cancelFlag task.CancelFlag) {
-		processCancelCommand(p.context, p.sendCommandPool, &docState)
+		processCancelCommand(p.context, p.sendCommandPool, &docState, p.documentMgr)
 	})
 	if err != nil {
 		log.Error("CancelCommand failed", err)
@@ -222,9 +225,9 @@ func (p *EngineProcessor) processPendingDocuments(instanceID string) {
 
 	//iterate through all pending messages
 	for _, f := range files {
-		log.Debugf("Processing an older document - %v", f.Name())
+		log.Infof("Processing pending document - %v", f.Name())
 		//inspect document state
-		docState := docmanager.GetDocumentInterimState(log, f.Name(), instanceID, appconfig.DefaultLocationOfPending)
+		docState := p.documentMgr.GetDocumentState(log, f.Name(), instanceID, appconfig.DefaultLocationOfPending)
 
 		if p.isSupportedDocumentType(docState.DocumentType) {
 			log.Debugf("processor processing pending document %v", docState.DocumentInformation.DocumentID)
@@ -256,34 +259,34 @@ func (p *EngineProcessor) processInProgressDocuments(instanceID string) {
 
 	//iterate through all InProgress docs
 	for _, f := range files {
-		log.Debugf("processing previously unexecuted document - %v", f.Name())
+		log.Infof("processing in progress document - %v", f.Name())
 
 		//inspect document state
-		docState := docmanager.GetDocumentInterimState(log, f.Name(), instanceID, appconfig.DefaultLocationOfCurrent)
+		docState := p.documentMgr.GetDocumentState(log, f.Name(), instanceID, appconfig.DefaultLocationOfCurrent)
 
 		retryLimit := config.Mds.CommandRetryLimit
 		if docState.DocumentInformation.RunCount >= retryLimit {
-			docmanager.MoveDocumentState(log, f.Name(), instanceID, appconfig.DefaultLocationOfCurrent, appconfig.DefaultLocationOfCorrupt)
+			p.documentMgr.MoveDocumentState(log, f.Name(), instanceID, appconfig.DefaultLocationOfCurrent, appconfig.DefaultLocationOfCorrupt)
 			continue
 		}
 
 		// increment the command run count
 		docState.DocumentInformation.RunCount++
 
-		docmanager.PersistData(log, docState.DocumentInformation.DocumentID, instanceID, appconfig.DefaultLocationOfCurrent, docState)
+		p.documentMgr.PersistDocumentState(log, docState.DocumentInformation.DocumentID, instanceID, appconfig.DefaultLocationOfCurrent, docState)
 
 		if p.isSupportedDocumentType(docState.DocumentType) {
 			log.Debugf("processor processing in-progress document %v", docState.DocumentInformation.DocumentID)
 			//Submit the work to Job Pool so that we don't block for processing of new messages
 			if err := p.submit(&docState); err != nil {
 				log.Errorf("failed to submit in progress document %v : %v", docState.DocumentInformation.DocumentID, err)
-				docmanager.MoveDocumentState(log, f.Name(), instanceID, appconfig.DefaultLocationOfCurrent, appconfig.DefaultLocationOfCorrupt)
+				p.documentMgr.MoveDocumentState(log, f.Name(), instanceID, appconfig.DefaultLocationOfCurrent, appconfig.DefaultLocationOfCorrupt)
 			}
 		}
 	}
 }
 
-func (p *EngineProcessor) isSupportedDocumentType(documentType model.DocumentType) bool {
+func (p *EngineProcessor) isSupportedDocumentType(documentType contracts.DocumentType) bool {
 	for _, d := range p.supportedDocTypes {
 		if documentType == d {
 			return true
@@ -292,10 +295,10 @@ func (p *EngineProcessor) isSupportedDocumentType(documentType model.DocumentTyp
 	return false
 }
 
-func processCommand(context context.T, executerCreator ExecuterCreator, cancelFlag task.CancelFlag, resChan chan contracts.DocumentResult, docState *model.DocumentState) {
+func processCommand(context context.T, executerCreator ExecuterCreator, cancelFlag task.CancelFlag, resChan chan contracts.DocumentResult, docState *contracts.DocumentState, docMgr docmanager.DocumentMgr) {
 	log := context.Log()
 	//persist the current running document
-	docmanager.MoveDocumentState(log,
+	docMgr.MoveDocumentState(log,
 		docState.DocumentInformation.DocumentID,
 		docState.DocumentInformation.InstanceID,
 		appconfig.DefaultLocationOfPending,
@@ -305,13 +308,13 @@ func processCommand(context context.T, executerCreator ExecuterCreator, cancelFl
 	instanceID := docState.DocumentInformation.InstanceID
 	messageID := docState.DocumentInformation.MessageID
 	e := executerCreator(context)
-	docStore := executer.NewDocumentFileStore(context, instanceID, documentID, appconfig.DefaultLocationOfCurrent, docState)
+	docStore := executer.NewDocumentFileStore(context, instanceID, documentID, appconfig.DefaultLocationOfCurrent, docState, docMgr)
 	statusChan := e.Run(
 		cancelFlag,
 		&docStore,
 	)
 	// Listen for reboot
-	isReboot := false
+	var final *contracts.DocumentResult
 	for res := range statusChan {
 		if res.LastPlugin == "" {
 			log.Infof("sending document: %v complete response", documentID)
@@ -322,32 +325,38 @@ func processCommand(context context.T, executerCreator ExecuterCreator, cancelFl
 		handleCloudwatchPlugin(context, res.PluginResults, documentID)
 		//hand off the message to Service
 		resChan <- res
-		isReboot = res.Status == contracts.ResultStatusSuccessAndReboot
+		final = &res
 	}
-	//TODO since there's a bug in UpdatePlugin that returns InProgress even if the document is completed, we cannot use InProgress to judge here, we need to fix the bug by the time out-of-proc is done
+	//TODO add shutdown as API call, move cancelFlag out of task pool; cancelFlag to contracts, nobody else above runplugins needs to create cancelFlag.
 	// Shutdown/reboot detection
-	if isReboot {
+	if final == nil || final.LastPlugin != "" {
+		log.Infof("document %v still in progress, shutting down...", messageID)
+		return
+	} else if final.Status == contracts.ResultStatusSuccessAndReboot {
 		log.Infof("document %v requested reboot, need to resume", messageID)
 		rebooter.RequestPendingReboot(context.Log())
 		return
 	}
 
 	//persist : commands execution in completed folder (terminal state folder)
-	log.Debugf("execution of %v is over. Moving interimState file from Current to Completed folder", messageID)
+	log.Infof("execution of %v is over. Removing interimState from current folder", messageID)
 
-	docmanager.MoveDocumentState(log,
+	docMgr.RemoveDocumentState(log,
 		documentID,
 		instanceID,
-		appconfig.DefaultLocationOfCurrent,
-		appconfig.DefaultLocationOfCompleted)
+		appconfig.DefaultLocationOfCurrent)
 
 }
 
 //TODO CancelCommand is currently treated as a special type of Command by the Processor, but in general Cancel operation should be seen as a probe to existing commands
-func processCancelCommand(context context.T, sendCommandPool task.Pool, docState *model.DocumentState) {
+func processCancelCommand(context context.T, sendCommandPool task.Pool, docState *contracts.DocumentState, docMgr docmanager.DocumentMgr) {
 
 	log := context.Log()
-
+	//persist the final status of cancel-message in current folder
+	docMgr.MoveDocumentState(log,
+		docState.DocumentInformation.DocumentID,
+		docState.DocumentInformation.InstanceID,
+		appconfig.DefaultLocationOfPending, appconfig.DefaultLocationOfCurrent)
 	log.Debugf("Canceling job with id %v...", docState.CancelInformation.CancelMessageID)
 
 	if found := sendCommandPool.Cancel(docState.CancelInformation.CancelMessageID); !found {
@@ -359,20 +368,13 @@ func processCancelCommand(context context.T, sendCommandPool task.Pool, docState
 		docState.DocumentInformation.DocumentStatus = contracts.ResultStatusSuccess
 	}
 
-	//persist the final status of cancel-message in current folder
-	docmanager.PersistData(log,
-		docState.DocumentInformation.DocumentID,
-		docState.DocumentInformation.InstanceID,
-		appconfig.DefaultLocationOfCurrent, docState)
-
 	//persist : commands execution in completed folder (terminal state folder)
-	log.Debugf("Execution of %v is over. Moving interimState file from Current to Completed folder", docState.DocumentInformation.MessageID)
+	log.Debugf("Execution of %v is over. Removing interimState file from Current folder", docState.DocumentInformation.MessageID)
 
-	docmanager.MoveDocumentState(log,
+	docMgr.RemoveDocumentState(log,
 		docState.DocumentInformation.DocumentID,
 		docState.DocumentInformation.InstanceID,
-		appconfig.DefaultLocationOfCurrent,
-		appconfig.DefaultLocationOfCompleted)
+		appconfig.DefaultLocationOfCurrent)
 
 }
 

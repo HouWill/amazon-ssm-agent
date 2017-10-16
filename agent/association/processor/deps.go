@@ -18,8 +18,8 @@ import (
 	"github.com/aws/amazon-ssm-agent/agent/association/model"
 	"github.com/aws/amazon-ssm-agent/agent/association/parser"
 	"github.com/aws/amazon-ssm-agent/agent/context"
-	"github.com/aws/amazon-ssm-agent/agent/docmanager"
-	docModel "github.com/aws/amazon-ssm-agent/agent/docmanager/model"
+	"github.com/aws/amazon-ssm-agent/agent/contracts"
+	"github.com/aws/amazon-ssm-agent/agent/framework/docmanager"
 	"github.com/aws/amazon-ssm-agent/agent/log"
 	"github.com/aws/amazon-ssm-agent/agent/platform"
 	messageContract "github.com/aws/amazon-ssm-agent/agent/runcommand/contracts"
@@ -42,13 +42,13 @@ var sys system = &systemImp{}
 
 // bookkeepingService represents the dependency for docmanager
 type bookkeepingService interface {
-	DeleteOldDocumentFolderLogs(log log.T, instanceID, orchestrationRootDirName string, retentionDurationHours int, isIntendedFileNameFormat func(string) bool, formOrchestrationFolderName func(string) string)
+	DeleteOldOrchestrationLogs(log log.T, instanceID, orchestrationRootDirName string, retentionDurationHours int, isIntendedFileNameFormat func(string) bool)
 }
 
 type assocBookkeepingService struct{}
 
-func (assocBookkeepingService) DeleteOldDocumentFolderLogs(log log.T, instanceID, orchestrationRootDirName string, retentionDurationHours int, isIntendedFileNameFormat func(string) bool, formOrchestrationFolderName func(string) string) {
-	docmanager.DeleteOldDocumentFolderLogs(log, instanceID, orchestrationRootDirName, retentionDurationHours, isIntendedFileNameFormat, formOrchestrationFolderName)
+func (assocBookkeepingService) DeleteOldOrchestrationLogs(log log.T, instanceID, orchestrationRootDirName string, retentionDurationHours int, isIntendedFileNameFormat func(string) bool) {
+	docmanager.DeleteOldOrchestrationFolderLogs(log, instanceID, orchestrationRootDirName, retentionDurationHours, isIntendedFileNameFormat)
 }
 
 // system represents the dependency for platform
@@ -74,7 +74,7 @@ type parserService interface {
 	ParseDocumentForPayload(log log.T, rawData *model.InstanceAssociation) (*messageContract.SendCommandPayload, error)
 	InitializeDocumentState(context context.T,
 		payload *messageContract.SendCommandPayload,
-		rawData *model.InstanceAssociation) (docModel.DocumentState, error)
+		rawData *model.InstanceAssociation) (contracts.DocumentState, error)
 }
 
 type assocParserService struct{}
@@ -90,7 +90,7 @@ func (assocParserService) ParseDocumentForPayload(
 // InitializeDocumentState wraps engine InitializeCommandState
 func (assocParserService) InitializeDocumentState(context context.T,
 	payload *messageContract.SendCommandPayload,
-	rawData *model.InstanceAssociation) (docModel.DocumentState, error) {
+	rawData *model.InstanceAssociation) (contracts.DocumentState, error) {
 
 	return parser.InitializeDocumentState(context, payload, rawData)
 }

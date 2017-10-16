@@ -19,13 +19,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil/artifact"
-	"github.com/aws/amazon-ssm-agent/agent/log"
+	"github.com/aws/amazon-ssm-agent/agent/platform"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/birdwatcher/facade"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/envdetect"
 	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/packageservice"
+	"github.com/aws/amazon-ssm-agent/agent/plugins/configurepackage/trace"
 	"github.com/aws/amazon-ssm-agent/agent/sdkutil"
 	"github.com/aws/amazon-ssm-agent/agent/version"
 	"github.com/aws/aws-sdk-go/aws/request"
@@ -33,22 +35,42 @@ import (
 	"github.com/aws/aws-sdk-go/service/ssm"
 )
 
+// NanoTime is helper interface for mocking time
+type NanoTime interface {
+	NowUnixNano() int64
+}
+
+type TimeImpl struct {
+}
+
+func (t *TimeImpl) NowUnixNano() int64 {
+	return time.Now().UnixNano()
+}
+
 // PackageService is the concrete type for Birdwatcher PackageService
 type PackageService struct {
 	facadeClient  facade.BirdwatcherFacade
 	manifestCache packageservice.ManifestCache
 	collector     envdetect.Collector
+	timeProvider  NanoTime
 }
 
 // New constructor for PackageService
 func New(endpoint string, manifestCache packageservice.ManifestCache) packageservice.PackageService {
 	// TODO: endpoint vs appconfig
+	// TODO: pass in log var to log errs
 	cfg := sdkutil.AwsConfig()
 
 	// overrides ssm client config from appconfig if applicable
 	if appCfg, err := appconfig.Config(false); err == nil {
 		if appCfg.Ssm.Endpoint != "" {
 			cfg.Endpoint = &appCfg.Ssm.Endpoint
+		} else {
+			if region, err := platform.Region(); err == nil {
+				if defaultEndpoint := appconfig.GetDefaultEndPoint(region, "ssm"); defaultEndpoint != "" {
+					cfg.Endpoint = &defaultEndpoint
+				}
+			}
 		}
 		if appCfg.Agent.Region != "" {
 			cfg.Region = &appCfg.Agent.Region
@@ -70,6 +92,7 @@ func New(endpoint string, manifestCache packageservice.ManifestCache) packageser
 		facadeClient:  ssm.New(facadeClientSession),
 		manifestCache: manifestCache,
 		collector:     &envdetect.CollectorImp{},
+		timeProvider:  &TimeImpl{},
 	}
 }
 
@@ -78,7 +101,7 @@ func (ds *PackageService) PackageServiceName() string {
 }
 
 // DownloadManifest downloads the manifest for a given version (or latest) and returns the agent version specified in manifest
-func (ds *PackageService) DownloadManifest(log log.T, packageName string, version string) (string, error) {
+func (ds *PackageService) DownloadManifest(tracer trace.Tracer, packageName string, version string) (string, error) {
 	manifest, err := downloadManifest(ds, packageName, version)
 	if err != nil {
 		return "", err
@@ -87,7 +110,7 @@ func (ds *PackageService) DownloadManifest(log log.T, packageName string, versio
 }
 
 // DownloadArtifact downloads the platform matching artifact specified in the manifest
-func (ds *PackageService) DownloadArtifact(log log.T, packageName string, version string) (string, error) {
+func (ds *PackageService) DownloadArtifact(tracer trace.Tracer, packageName string, version string) (string, error) {
 	manifest, err := readManifestFromCache(ds.manifestCache, packageName, version)
 	if err != nil {
 		manifest, err = downloadManifest(ds, packageName, version)
@@ -96,33 +119,43 @@ func (ds *PackageService) DownloadArtifact(log log.T, packageName string, versio
 		}
 	}
 
-	file, err := ds.findFileFromManifest(log, manifest)
+	file, err := ds.findFileFromManifest(tracer, manifest)
 	if err != nil {
 		return "", err
 	}
 
-	return downloadFile(log, file)
+	return downloadFile(tracer, file)
 }
 
 // ReportResult sents back the result of the install/upgrade/uninstall run back to Birdwatcher
-func (ds *PackageService) ReportResult(log log.T, result packageservice.PackageResult) error {
-	// TODO: include trace and properties
-	// TODO: collect as much as possible data:
-	// * AZ, instance id, instance type, platform, version, arch, init system, ...
-
+func (ds *PackageService) ReportResult(tracer trace.Tracer, result packageservice.PackageResult) error {
+	log := tracer.CurrentTrace().Logger
 	env, _ := ds.collector.CollectData(log)
 
 	var previousPackageVersion *string
 	if result.PreviousPackageVersion != "" {
 		previousPackageVersion = &result.PreviousPackageVersion
 	}
+
+	var steps []*ssm.ConfigurePackageResultStep
+	for _, t := range result.Trace {
+		timing := (t.Timing - result.Timing) / 1000000 // converting nano to miliseconds
+		steps = append(steps,
+			&ssm.ConfigurePackageResultStep{
+				Action: &t.Operation,
+				Result: &t.Exitcode,
+				Timing: &timing,
+			})
+	}
+
+	overallTiming := (ds.timeProvider.NowUnixNano() - result.Timing) / 1000000
 	_, err := ds.facadeClient.PutConfigurePackageResult(
 		&ssm.PutConfigurePackageResultInput{
 			PackageName:            &result.PackageName,
 			PackageVersion:         &result.Version,
 			PreviousPackageVersion: previousPackageVersion,
 			Operation:              &result.Operation,
-			OverallTiming:          &result.Timing,
+			OverallTiming:          &overallTiming,
 			Result:                 &result.Exitcode,
 			Attributes: map[string]*string{
 				"platformName":     &env.OperatingSystem.Platform,
@@ -133,14 +166,7 @@ func (ds *PackageService) ReportResult(log log.T, result packageservice.PackageR
 				"region":           &env.Ec2Infrastructure.Region,
 				"availabilityZone": &env.Ec2Infrastructure.AvailabilityZone,
 			},
-			Steps: []*ssm.ConfigurePackageResultStep{
-				&ssm.ConfigurePackageResultStep{
-					// FIXME: this is just a copy of the overall execution for now
-					Action: &result.Operation,
-					Result: &result.Exitcode,
-					Timing: &result.Timing,
-				},
-			},
+			Steps: steps,
 		},
 	)
 
@@ -198,10 +224,10 @@ func parseManifest(data *[]byte) (*Manifest, error) {
 	return &manifest, nil
 }
 
-func (ds *PackageService) findFileFromManifest(log log.T, manifest *Manifest) (*File, error) {
+func (ds *PackageService) findFileFromManifest(tracer trace.Tracer, manifest *Manifest) (*File, error) {
 	var file *File
 
-	pkginfo, err := ds.extractPackageInfo(log, manifest)
+	pkginfo, err := ds.extractPackageInfo(tracer, manifest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find platform: %v", err)
 	}
@@ -220,13 +246,14 @@ func (ds *PackageService) findFileFromManifest(log log.T, manifest *Manifest) (*
 	return file, nil
 }
 
-func downloadFile(log log.T, file *File) (string, error) {
+func downloadFile(tracer trace.Tracer, file *File) (string, error) {
 	downloadInput := artifact.DownloadInput{
 		SourceURL: file.DownloadLocation,
 		// TODO don't hardcode sha256 - use multiple checksums
 		SourceChecksums: file.Checksums,
 	}
 
+	log := tracer.CurrentTrace().Logger
 	downloadOutput, downloadErr := networkdep.Download(log, downloadInput)
 	if downloadErr != nil || downloadOutput.LocalFilePath == "" {
 		errMessage := fmt.Sprintf("failed to download installation package reliably, %v", downloadInput.SourceURL)
@@ -243,7 +270,8 @@ func downloadFile(log log.T, file *File) (string, error) {
 }
 
 // ExtractPackageInfo returns the correct PackageInfo for the current instances platform/version/arch
-func (ds *PackageService) extractPackageInfo(log log.T, manifest *Manifest) (*PackageInfo, error) {
+func (ds *PackageService) extractPackageInfo(tracer trace.Tracer, manifest *Manifest) (*PackageInfo, error) {
+	log := tracer.CurrentTrace().Logger
 	env, err := ds.collector.CollectData(log)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect data: %v", err)

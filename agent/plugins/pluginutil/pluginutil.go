@@ -25,7 +25,6 @@ import (
 
 	"github.com/aws/amazon-ssm-agent/agent/appconfig"
 	"github.com/aws/amazon-ssm-agent/agent/contracts"
-	command_state_helper "github.com/aws/amazon-ssm-agent/agent/docmanager"
 	"github.com/aws/amazon-ssm-agent/agent/executers"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil"
 	"github.com/aws/amazon-ssm-agent/agent/fileutil/artifact"
@@ -51,8 +50,8 @@ type DefaultPlugin struct {
 	// ExecuteUploadOutputToS3Bucket is an object that can upload command outputs to S3 bucket.
 	ExecuteUploadOutputToS3Bucket UploadOutputToS3BucketExecuter
 
-	// UploadToS3Sync is true if uploading to S3 should be done synchronously, false for async.
-	UploadToS3Sync bool
+	// UploadToS3ASync is true if uploading to S3 should be done asynchronously, false for async.
+	UploadToS3ASync bool
 
 	// StdoutFileName is the name of the file that stores standard output.
 	StdoutFileName string
@@ -139,7 +138,7 @@ func (p *DefaultPlugin) UploadOutputToS3Bucket(log log.T, pluginID string, orche
 			if Stdout != "" {
 				localPath := filepath.Join(orchestrationDir, p.StdoutFileName)
 				s3Key := fileutil.BuildS3Path(outputS3KeyPrefix, pluginID, p.StdoutFileName)
-				if err := s3util.NewAmazonS3Util(log, outputS3BucketName).S3Upload(log, outputS3BucketName, s3Key, localPath); err != nil && p.UploadToS3Sync {
+				if err := s3util.NewAmazonS3Util(log, outputS3BucketName).S3Upload(log, outputS3BucketName, s3Key, localPath); err != nil && !p.UploadToS3ASync {
 					// if we are in synchronous mode, we can also return the error
 					uploadOutputToS3BucketErrors = append(uploadOutputToS3BucketErrors, err.Error())
 				}
@@ -147,14 +146,14 @@ func (p *DefaultPlugin) UploadOutputToS3Bucket(log log.T, pluginID string, orche
 			if Stderr != "" {
 				localPath := filepath.Join(orchestrationDir, p.StderrFileName)
 				s3Key := fileutil.BuildS3Path(outputS3KeyPrefix, pluginID, p.StderrFileName)
-				if err := s3util.NewAmazonS3Util(log, outputS3BucketName).S3Upload(log, outputS3BucketName, s3Key, localPath); err != nil && p.UploadToS3Sync {
+				if err := s3util.NewAmazonS3Util(log, outputS3BucketName).S3Upload(log, outputS3BucketName, s3Key, localPath); err != nil && !p.UploadToS3ASync {
 					// if we are in synchronous mode, we can also return the error
 					uploadOutputToS3BucketErrors = append(uploadOutputToS3BucketErrors, err.Error())
 				}
 			}
 		}
 
-		if p.UploadToS3Sync {
+		if !p.UploadToS3ASync {
 			uploadOutputsToS3()
 		} else {
 			go uploadOutputsToS3()
@@ -199,37 +198,6 @@ func DefaultPluginConfig() PluginConfig {
 		MaxStderrLength:       8000,
 		OutputTruncatedSuffix: "--output truncated--",
 	}
-}
-
-// PersistPluginInformationToCurrent persists the plugin execution results
-func PersistPluginInformationToCurrent(log log.T, pluginID string, config contracts.Configuration, res contracts.PluginResult) {
-	//Every plugin should persist information inside the execute method.
-	//At this point a plugin knows that an interim state is already stored in Current folder.
-	//Plugin will continue to add data to the same file in Current folder
-	messageIDSplit := strings.Split(config.MessageId, ".")
-	instanceID := messageIDSplit[len(messageIDSplit)-1]
-
-	pluginState := command_state_helper.GetPluginState(log,
-		pluginID,
-		config.BookKeepingFileName,
-		instanceID,
-		appconfig.DefaultLocationOfCurrent)
-
-	if pluginState == nil {
-		log.Errorf("failed to find plugin state with id %v", pluginID)
-		return
-	}
-
-	//set plugin state's execution details
-	pluginState.Configuration = config
-	pluginState.Result = res
-
-	command_state_helper.PersistPluginState(log,
-		*pluginState,
-		pluginID,
-		config.BookKeepingFileName,
-		instanceID,
-		appconfig.DefaultLocationOfCurrent)
 }
 
 // LoadParametersAsList returns properties as a list and appropriate PluginResult if error is encountered
